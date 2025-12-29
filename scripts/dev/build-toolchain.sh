@@ -33,7 +33,7 @@ echo "============================================================"
 echo "[local] ▶ Starting ARM64 cross-build"
 echo "============================================================"
 
-podman run --rm --platform=linux/amd64 \
+podman run -u 0 --rm --platform=linux/amd64 \
     -v "${REPO_ROOT}/out:/out" \
     -v "${REPO_ROOT}/build:/build" \
     "${BUILDER_IMAGE}" \
@@ -79,7 +79,7 @@ echo "============================================================"
 echo "[local] ▶ Starting AMD64 native build"
 echo "============================================================"
 
-podman run --rm --platform=linux/amd64 \
+podman run -u 0 --rm --platform=linux/amd64 \
     -v "${REPO_ROOT}/out:/out" \
     -v "${REPO_ROOT}/build:/build" \
     "${BUILDER_IMAGE}" \

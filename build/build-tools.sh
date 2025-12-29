@@ -59,9 +59,13 @@ KUBECTL_VERSION="${KUBECTL_VERSION_OVERRIDE:-${KUBECTL_VERSION_PIN:-}}"
 OCREF="${OCREF_OVERRIDE:-${OCREF_PIN:-}}"
 RANCHER_VERSION="${RANCHER_VERSION_OVERRIDE:-${RANCHER_VERSION_PIN:-}}"
 FULCIO_VERSION="${FULCIO_VERSION_OVERRIDE:-${FULCIO_VERSION_PIN:-}}"
-GO_VERSION="${GO_VERSION_INPUT:-${GO_VERSION_PIN:-1.25.5}}"
+GO_VERSION="${GO_VERSION_INPUT:-${GO_VERSION_PIN:-}}"
 
-log "Pins → kubectl=${KUBECTL_VERSION}, oc=${OCREF}, rancher=${RANCHER_VERSION:-<latest>}, fulcio=${FULCIO_VERSION}, go=${GO_VERSION}"
+log "Pins → kubectl=${KUBECTL_VERSION}, oc=${OCREF}, rancher=${RANCHER_VERSION:-<latest>}, fulcio=${FULCIO_VERSION}, go=${GO_VERSION:-<from-image>}"
+
+# ----------------------------- Output & packaging dirs ------------------------
+# Ensure destination directories exist before any install/build
+mkdir -p /opt/tools/bin /out
 
 # ----------------------------- Fast-path: prebuilt ----------------------------
 PREBUILT_DIR="/opt/prebuilt/linux-${ARCH}/bin"
@@ -78,51 +82,34 @@ else
     goto_package=false
 fi
 
-# ----------------------------- Go Toolchain (HOST-based) ----------------------
+# ----------------------------- Go env (assume preinstalled) -------------------
 if [ "${goto_package}" != "true" ]; then
-    HOST_UNAME="$(uname -m)"
-    case "${HOST_UNAME}" in
-    x86_64) GO_HOST_TARBALL="linux-amd64" ;;
-    aarch64) GO_HOST_TARBALL="linux-arm64" ;;
-    *)
-        GO_HOST_TARBALL="linux-amd64"
-        warn "Unknown host arch '${HOST_UNAME}', defaulting to linux-amd64"
-        ;;
-    esac
+    command -v go >/dev/null 2>&1 || fail "missing dependency: go (preinstall in Dockerfile)"
 
-    GO_URL="https://go.dev/dl/go${GO_VERSION}.${GO_HOST_TARBALL}.tar.gz"
-    curl -fsSL "${GO_URL}" -o "${WORKDIR}/go.tgz" || fail "go: download failed (${GO_URL})"
-    tar -C /usr/local -xzf "${WORKDIR}/go.tgz" || fail "go: extract failed"
-    rm -f "${WORKDIR}/go.tgz"
-
-    export GOROOT=/usr/local/go
-    export GOPATH=/root/go
-    export PATH="$GOROOT/bin:$GOPATH/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    export GOOS="${OS}" GOARCH="${ARCH}" GOTOOLCHAIN=local
+    # GOOS/GOARCH/GOTOOLCHAIN vengono dalla immagine; eventualmente li (ri)esportiamo:
+    export GOOS="${OS}" GOARCH="${ARCH}" GOTOOLCHAIN="${GOTOOLCHAIN:-local}"
     : "${GOMAXPROCS:=$(nproc)}"
     export GOMAXPROCS
-    : "${GOFLAGS:=-trimpath}"
-    export GOWORK=off
-    export GOFLAGS="${GOFLAGS} -buildvcs=false"
+    : "${GOFLAGS:=${GOFLAGS:-} -trimpath -buildvcs=false}"
+    export GOFLAGS
+    export GOWORK="${GOWORK:-off}"
 
+    # ccache (se presente)
     if command -v ccache >/dev/null 2>&1; then
         export CCACHE_DIR=/root/.ccache
         export CCACHE_MAXSIZE=5G
         if [ "${ARCH}" = "arm64" ]; then
-            # Use clang/clang++ with ccache for ARM64 cross builds
             export CC="ccache clang"
             export CXX="ccache clang++"
             export AR=llvm-ar
             export LD=ld.lld
         else
-            # Native builds (amd64): gcc/g++
             export CC="ccache gcc"
             export CXX="ccache g++"
         fi
         log "ccache enabled: dir=${CCACHE_DIR}, maxsize=${CCACHE_MAXSIZE}, CC=${CC}, CXX=${CXX}"
     else
         log "ccache not available; proceeding without compiler cache"
-        # Ensure toolchain for ARM64 even without ccache
         if [ "${ARCH}" = "arm64" ]; then
             export CC="${CC:-clang}"
             export CXX="${CXX:-clang++}"
@@ -131,14 +118,12 @@ if [ "${goto_package}" != "true" ]; then
         fi
     fi
 
-    # Default pkg-config sysroot/libdir for ARM64 cross (unless provided by workflow)
+    # pkg-config sysroot per cross ARM64
     if [ "${ARCH}" = "arm64" ]; then
         export PKG_CONFIG_SYSROOT_DIR="${PKG_CONFIG_SYSROOT_DIR:-/opt/sysroot/arm64}"
         export PKG_CONFIG_LIBDIR="${PKG_CONFIG_LIBDIR:-/opt/sysroot/arm64/usr/lib64/pkgconfig:/opt/sysroot/arm64/usr/lib/pkgconfig}"
     fi
 fi
-
-mkdir -p /opt/tools/bin /out
 
 # ----------------------------- Helpers: ldflags -------------------------------
 build_date() { date -u +%Y-%m-%dT%H:%M:%SZ; }

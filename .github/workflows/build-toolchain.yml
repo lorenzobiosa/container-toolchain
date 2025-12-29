@@ -41,10 +41,12 @@ jobs:
           KUBECTL=$(jq -r '.kubectl' "$VERSIONS_JSON")
           OCREF=$(jq -r '.oc' "$VERSIONS_JSON")
           RANCHER=$(jq -r '.rancher' "$VERSIONS_JSON")
+          FULCIO=$(jq -r '.fulcio' "$VERSIONS_JSON")
           GO_VER=$(jq -r '.go' "$VERSIONS_JSON")
           printf 'kubectl=%s\n' "${KUBECTL}" >> "$GITHUB_OUTPUT"
           printf 'ocref=%s\n'   "${OCREF}"    >> "$GITHUB_OUTPUT"
           printf 'rancher=%s\n' "${RANCHER}"  >> "$GITHUB_OUTPUT"
+          printf 'fulcio=%s\n' "${FULCIO}"  >> "$GITHUB_OUTPUT"
           printf 'go=%s\n'      "${GO_VER}"   >> "$GITHUB_OUTPUT"
 
       - name: Prepare output dirs and caches
@@ -96,14 +98,15 @@ jobs:
           KUBECTL_VERSION: ${{ steps.pins.outputs.kubectl }}
           OCREF: ${{ steps.pins.outputs.ocref }}
           RANCHER_VERSION: ${{ steps.pins.outputs.rancher }}
+          FULCIO_VERSION: ${{ steps.pins.outputs.fulcio }}
           GO_VERSION: ${{ steps.pins.outputs.go || env.GO_VERSION_DEFAULT }}
         run: |
           set -euo pipefail
-          docker run --rm --platform linux/amd64 \
+          docker run -u 0 --rm --platform linux/amd64 \
             --security-opt=no-new-privileges:true \
             --cap-drop=ALL --cap-add=DAC_OVERRIDE \
             -e TOOLCHAIN_BUILDER=1 \
-            -e KUBECTL_VERSION -e OCREF -e RANCHER_VERSION -e GO_VERSION \
+            -e KUBECTL_VERSION -e OCREF -e RANCHER_VERSION -e FULCIO_VERSION -e GO_VERSION \
             -e OS=linux \
             -v "$PWD/out:/out" \
             -v "$PWD/build:/build" \
@@ -132,14 +135,15 @@ jobs:
           KUBECTL_VERSION: ${{ steps.pins.outputs.kubectl }}
           OCREF: ${{ steps.pins.outputs.ocref }}
           RANCHER_VERSION: ${{ steps.pins.outputs.rancher }}
+          FULCIO_VERSION: ${{ steps.pins.outputs.fulcio }}
           GO_VERSION: ${{ steps.pins.outputs.go || env.GO_VERSION_DEFAULT }}
         run: |
           set -euo pipefail
-          docker run --rm --platform linux/amd64 \
+          docker run -u 0 --rm --platform linux/amd64 \
             --security-opt=no-new-privileges:true \
             --cap-drop=ALL --cap-add=DAC_OVERRIDE \
             -e TOOLCHAIN_BUILDER=1 \
-            -e KUBECTL_VERSION -e OCREF -e RANCHER_VERSION -e GO_VERSION \
+            -e KUBECTL_VERSION -e OCREF -e RANCHER_VERSION -e FULCIO_VERSION -e GO_VERSION \
             -e OS=linux \
             -v "$PWD/out:/out" \
             -v "$PWD/build:/build" \
