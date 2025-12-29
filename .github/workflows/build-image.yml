@@ -7,7 +7,7 @@ on:
     branches: ["master"]
     paths:
       - "build/Dockerfile"
-      - ".github/workflows/build-builder-image.yml"
+      - ".github/workflows/build-image.yml"
 
 jobs:
   build-push:
@@ -30,7 +30,7 @@ jobs:
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & Push # multi-arch
