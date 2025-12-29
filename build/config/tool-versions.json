@@ -1,6 +1,7 @@
 {
   "kubectl": "v1.35.0",
-  "oc": "main",
+  "oc": "release-4.23",
   "rancher": "v2.13.1",
-  "go": "1.25.5"
+  "go": "1.25.5",
+  "fulcio": "v1.8.4"
 }
