@@ -44,11 +44,13 @@ VERSIONS_JSON="/build/config/tool-versions.json"
 KUBECTL_VERSION_PIN=""
 OCREF_PIN=""
 RANCHER_VERSION_PIN=""
+FULCIO_VERSION_PIN=""
 GO_VERSION_PIN=""
 if [ -f "${VERSIONS_JSON}" ]; then
     KUBECTL_VERSION_PIN="$(jq -r '.kubectl // empty' "${VERSIONS_JSON}")"
     OCREF_PIN="$(jq -r '.oc // empty' "${VERSIONS_JSON}")"
     RANCHER_VERSION_PIN="$(jq -r '.rancher // empty' "${VERSIONS_JSON}")"
+    FULCIO_VERSION_PIN="$(jq -r '.fulcio // empty' "${VERSIONS_JSON}")"
     GO_VERSION_PIN="$(jq -r '.go // empty' "${VERSIONS_JSON}")"
 fi
 
@@ -56,20 +58,10 @@ fi
 KUBECTL_VERSION="${KUBECTL_VERSION_OVERRIDE:-${KUBECTL_VERSION_PIN:-}}"
 OCREF="${OCREF_OVERRIDE:-${OCREF_PIN:-}}"
 RANCHER_VERSION="${RANCHER_VERSION_OVERRIDE:-${RANCHER_VERSION_PIN:-}}"
+FULCIO_VERSION="${FULCIO_VERSION_OVERRIDE:-${FULCIO_VERSION_PIN:-}}"
 GO_VERSION="${GO_VERSION_INPUT:-${GO_VERSION_PIN:-1.25.5}}"
 
-if [ -z "${KUBECTL_VERSION}" ] || [ "${KUBECTL_VERSION}" = "latest" ]; then
-    KUBECTL_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)" || fail "kubectl: cannot read stable.txt"
-fi
-if [ -z "${OCREF}" ] || [ "${OCREF}" = "latest" ]; then
-    OCREF="$(curl -fsSL https://api.github.com/repos/openshift/oc/releases/latest | jq -r '.tag_name' || true)"
-    if [ -z "${OCREF}" ] || [ "${OCREF}" = "null" ]; then
-        OCREF="$(git ls-remote --tags --refs https://github.com/openshift/oc.git | awk -F/ '{print $NF}' | sort -Vr | head -n1)"
-    fi
-    [ -n "${OCREF}" ] || fail "oc: cannot resolve latest release tag"
-fi
-
-log "Pins → kubectl=${KUBECTL_VERSION}, oc=${OCREF}, rancher=${RANCHER_VERSION:-<latest>}, go=${GO_VERSION}"
+log "Pins → kubectl=${KUBECTL_VERSION}, oc=${OCREF}, rancher=${RANCHER_VERSION:-<latest>}, fulcio=${FULCIO_VERSION}, go=${GO_VERSION}"
 
 # ----------------------------- Fast-path: prebuilt ----------------------------
 PREBUILT_DIR="/opt/prebuilt/linux-${ARCH}/bin"
@@ -110,7 +102,8 @@ if [ "${goto_package}" != "true" ]; then
     : "${GOMAXPROCS:=$(nproc)}"
     export GOMAXPROCS
     : "${GOFLAGS:=-trimpath}"
-    export GOFLAGS
+    export GOWORK=off
+    export GOFLAGS="${GOFLAGS} -buildvcs=false"
 
     if command -v ccache >/dev/null 2>&1; then
         export CCACHE_DIR=/root/.ccache
@@ -161,15 +154,35 @@ kubectl_ldflags() {
 EOF
 }
 
+# Deriva un SemVer valido per k8s component-base da un ref di oc
+derive_kube_semver() {
+    local ref="$1"
+    # Caso 1: già SemVer con prefisso v
+    if [[ "$ref" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+        echo "$ref"
+        return 0
+    fi
+    # Caso 2: release-X.Y  → vX.Y.0
+    if [[ "$ref" =~ ^release-([0-9]+)\.([0-9]+)$ ]]; then
+        echo "v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.0"
+        return 0
+    fi
+    # Fallback (evita panic anche su formati imprevisti)
+    echo "v0.0.0"
+}
+
 oc_ldflags() {
     local version="$1" commit="$2"
+    # Deriva SemVer per component-base (kube) dai ref di oc
+    local kube_semver
+    kube_semver="$(derive_kube_semver "${version}")"
     cat <<EOF
 -s -w \
 -X github.com/openshift/oc/pkg/version.versionFromGit=${version} \
 -X github.com/openshift/oc/pkg/version.commitFromGit=${commit} \
 -X github.com/openshift/oc/pkg/version.gitTreeState=clean \
 -X github.com/openshift/oc/pkg/version.buildDate=$(build_date) \
--X k8s.io/component-base/version.gitVersion=${version} \
+-X k8s.io/component-base/version.gitVersion=${kube_semver} \
 -X k8s.io/component-base/version.gitCommit=${commit} \
 -X k8s.io/component-base/version.buildDate=$(build_date) \
 -X k8s.io/component-base/version.gitTreeState=clean
@@ -189,7 +202,7 @@ if [ "${goto_package}" != "true" ]; then
         (cd "${WORKDIR}/k8s" &&
             COMMIT="$(git rev-parse --short HEAD)" &&
             GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-                go build "${GOFLAGS}" \
+                go build ${GOFLAGS} \
                 -ldflags "$(kubectl_ldflags "${KUBECTL_VERSION}" "${COMMIT}")" \
                 -o /opt/tools/bin/kubectl ./cmd/kubectl) || fail "kubectl: go build failed (arm64)"
     else
@@ -227,75 +240,59 @@ if [ "${goto_package}" != "true" ]; then
     HAS_GOMOD="no"
     [ -f "${WORKDIR}/oc/go.mod" ] && HAS_GOMOD="yes"
 
-    if [ "${HAS_GOMOD}" = "yes" ]; then
-        if [ "${ARCH}" = "arm64" ]; then
-            # ---------- ARM64: go build diretto con Clang+LLD + sysroot ----------
-            log "oc (ARM64): cross-build via 'go build' (skip 'make oc')"
-            (cd "${WORKDIR}/oc" &&
+    # --- Security pin: Sigstore Fulcio from versions.json (CVE fix >= 1.8.3) ---
+    if [ "${HAS_GOMOD}" = "yes" ] && [ -n "${FULCIO_VERSION}" ] && [ "${FULCIO_VERSION}" != "null" ]; then
+        log "oc: pinning github.com/sigstore/fulcio to ${FULCIO_VERSION}"
+        (
+            cd "${WORKDIR}/oc" || exit 1
+            GO111MODULE=on go get "github.com/sigstore/fulcio@${FULCIO_VERSION}" || fail "oc: go get fulcio@${FULCIO_VERSION} failed"
+            GO111MODULE=on go mod tidy || fail "oc: go mod tidy failed"
+            GO111MODULE=on go mod vendor || fail "oc: go mod vendor failed"
+
+            # Assicurati di aver già fatto: go mod vendor
+            FULCIO_VER_EXPECTED="v${FULCIO_VERSION#v}"
+            SEL_VER="$(GO111MODULE=on GOWORK=off go list -m -mod=vendor -f '{{.Version}}' github.com/sigstore/fulcio 2>/dev/null || true)"
+
+            if [ -z "${SEL_VER}" ]; then
+                fail "oc: fulcio not found in vendor (go list -mod=vendor returned empty)"
+            fi
+            if [ "${SEL_VER}" != "${FULCIO_VER_EXPECTED}" ]; then
+                fail "oc: fulcio version mismatch (vendor): got ${SEL_VER}, expected ${FULCIO_VER_EXPECTED}"
+            fi
+
+            log "oc: fulcio pinned (vendor) → ${SEL_VER}"
+        )
+    else
+        log "oc: fulcio pin skipped (HAS_GOMOD=${HAS_GOMOD}, FULCIO_VERSION='${FULCIO_VERSION}')"
+    fi
+
+    # --- Build 'oc' SOLO con 'go build' (niente 'make oc') ---
+    if [ "${ARCH}" = "arm64" ]; then
+        log "oc (ARM64): cross-build via 'go build'"
+        (
+            cd "${WORKDIR}/oc" &&
                 COMMIT="$(git rev-parse --short HEAD || echo unknown)" &&
                 GO111MODULE=on CGO_ENABLED=1 \
-                    go build "${GOFLAGS}" \
+                    go build \
+                    -mod=mod \
+                    -buildvcs=false \
                     -tags "include_gcs include_oss containers_image_openpgp" \
-                    -ldflags "$(oc_ldflags "${OCREF}" "${COMMIT}")" \
-                    -o /opt/tools/bin/oc ./cmd/oc) || fail "oc: go build failed (ARM64)"
-        else
-            # ---------- AMD64: flusso originale con 'make oc' ----------
-            log "oc (AMD64): modern layout (go.mod) → 'make oc'"
-            if (cd "${WORKDIR}/oc" && GO111MODULE=on MAKEFLAGS="-j$(nproc)" make oc >/dev/null 2>&1); then
-                OC_BIN=""
-                if [ -f "${WORKDIR}/oc/oc" ]; then
-                    OC_BIN="${WORKDIR}/oc/oc"
-                elif [ -f "${WORKDIR}/oc/_output/bin/oc" ]; then
-                    OC_BIN="${WORKDIR}/oc/_output/bin/oc"
-                elif [ -f "${WORKDIR}/oc/_output/local/bin/${OS}/${ARCH}/oc" ]; then
-                    OC_BIN="${WORKDIR}/oc/_output/local/bin/${OS}/${ARCH}/oc"
-                fi
-                if [ -n "${OC_BIN}" ]; then
-                    install -m0755 "${OC_BIN}" /opt/tools/bin/oc
-                else
-                    warn "oc: 'make oc' did not produce a known output → fallback to go build (CGO)"
-                    (cd "${WORKDIR}/oc" &&
-                        COMMIT="$(git rev-parse --short HEAD)" &&
-                        GO111MODULE=on CGO_ENABLED=1 \
-                            go build "${GOFLAGS}" -tags "include_gcs include_oss containers_image_openpgp gssapi" \
-                            -ldflags "$(oc_ldflags "${OCREF}" "${COMMIT}")" \
-                            -o /opt/tools/bin/oc ./cmd/oc) || fail "oc: go build failed (modern)"
-                fi
-            else
-                warn "oc: 'make oc' failed → fallback to go build (CGO)"
-                (cd "${WORKDIR}/oc" &&
-                    COMMIT="$(git rev-parse --short HEAD)" &&
-                    GO111MODULE=on CGO_ENABLED=1 \
-                        go build "${GOFLAGS}" -tags "include_gcs include_oss containers_image_openpgp gssapi" \
-                        -ldflags "$(oc_ldflags "${OCREF}" "${COMMIT}")" \
-                        -o /opt/tools/bin/oc ./cmd/oc) || fail "oc: go build failed (modern)"
-            fi
-        fi
+                    -ldflags "$(oc_ldflags "${OCREF}" "${COMMIT}") -linkmode=external -extldflags '-Wl,--gc-sections -Wl,--as-needed'" \
+                    -o /opt/tools/bin/oc ./cmd/oc
+        ) || fail "oc: go build failed (ARM64)"
     else
-        # legacy layout
-        log "oc: legacy layout → legacy build flow"
-        legacy_ok=false
-        if [ -x "${WORKDIR}/oc/hack/build-go.sh" ]; then
-            (cd "${WORKDIR}/oc" && bash hack/build-go.sh && install -m0755 oc /opt/tools/bin/oc) && legacy_ok=true || true
-        fi
-        if [ "${legacy_ok}" = "false" ]; then
-            if [ "${ARCH}" = "arm64" ]; then
-                (cd "${WORKDIR}/oc" &&
-                    COMMIT="$(git rev-parse --short HEAD)" &&
-                    CGO_ENABLED=1 \
-                        go build "${GOFLAGS}" -tags "include_gcs include_oss containers_image_openpgp" \
-                        -ldflags "$(oc_ldflags "${OCREF}" "${COMMIT}")" \
-                        -o /opt/tools/bin/oc ./cmd/oc) || fail "oc: go build failed (legacy ARM64)"
-            else
-                (cd "${WORKDIR}/oc" &&
-                    COMMIT="$(git rev-parse --short HEAD)" &&
-                    CGO_ENABLED=1 \
-                        go build "${GOFLAGS}" -tags "include_gcs include_oss containers_image_openpgp gssapi" \
-                        -ldflags "$(oc_ldflags "${OCREF}" "${COMMIT}")" \
-                        -o /opt/tools/bin/oc ./cmd/oc) || fail "oc: go build failed (legacy AMD64)"
-            fi
-        fi
+        log "oc (AMD64): native build via 'go build'"
+        (
+            cd "${WORKDIR}/oc" &&
+                COMMIT="$(git rev-parse --short HEAD || echo unknown)" &&
+                GO111MODULE=on CGO_ENABLED=1 \
+                    go build ${GOFLAGS} -buildvcs=false \
+                    -tags "include_gcs include_oss containers_image_openpgp gssapi" \
+                    -ldflags "$(oc_ldflags "${OCREF}" "${COMMIT}") -linkmode=external -extldflags '-Wl,--gc-sections -Wl,--as-needed'" \
+                    -o /opt/tools/bin/oc ./cmd/oc
+        ) || fail "oc: go build failed (AMD64)"
     fi
+
     rm -rf "${WORKDIR}/oc"
 
     # -------- rancher (CGO=0) --------
@@ -312,7 +309,7 @@ if [ "${goto_package}" != "true" ]; then
         --filter=blob:none --depth 1 --branch "${RANCHER_VERSION}" \
         https://github.com/rancher/cli.git "${WORKDIR}/rancher-cli" || fail "rancher: clone failed"
     (cd "${WORKDIR}/rancher-cli" &&
-        CGO_ENABLED=0 go build "${GOFLAGS}" -ldflags "-s -w" -o /opt/tools/bin/rancher ./) || fail "rancher: build failed"
+        CGO_ENABLED=0 go build ${GOFLAGS} -ldflags "-s -w" -o /opt/tools/bin/rancher ./) || fail "rancher: build failed"
     rm -rf "${WORKDIR}/rancher-cli"
 fi
 
