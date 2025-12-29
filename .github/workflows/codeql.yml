@@ -1,0 +1,66 @@
+# .github/workflows/codeql.yml
+# ------------------------------------------------------------------------------
+# Biosa Labs — CodeQL Advanced Security Scanning
+# ------------------------------------------------------------------------------
+
+name: CodeQL Security Scanning
+
+on:
+  push:
+    branches:
+      - master
+      - "release/*"
+  pull_request:
+    branches:
+      - master
+  schedule:
+    - cron: "30 2 * * 0" # Weekly (Sunday 02:30 CET)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  packages: read
+  security-events: write # required to upload SARIF
+
+jobs:
+  create-matrix:
+    name: Detect repository languages
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.languages }}
+    steps:
+      - name: Build language matrix (Actions only)
+        id: set-matrix
+        run: |
+          # Analyze only GitHub Actions workflows (no Go/JS/Python in repo)
+          echo '["actions"]' > /tmp/lang.json
+          echo "languages=$(cat /tmp/lang.json)" >> "$GITHUB_OUTPUT"
+
+  analyze:
+    name: CodeQL analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    needs: create-matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(needs.create-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@5ab5aef07979436fcc7f5da1f799a5224047d84a
+        with:
+          languages: ${{ matrix.language }} # -> "actions"
+          build-mode: none # Explicit for Actions (interpreted)
+          # Optional: usa una query suite più estesa per Actions
+          # queries: security-extended
+
+      # Nessun autobuild: non serve per 'actions' (linguaggio non compilato)
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@5ab5aef07979436fcc7f5da1f799a5224047d84a
+        with:
+          category: "/language:${{ matrix.language }}"

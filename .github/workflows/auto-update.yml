@@ -1,0 +1,152 @@
+# .github/workflows/auto-update.yml
+# ------------------------------------------------------------------------------
+# Auto-Update Upstream Versions (PR Bot) — Enterprise Configuration
+#
+# Purpose:
+#   - Automatically discover the latest upstream versions of kubectl and rancher.
+#   - Preserve existing keys in build/config/tool-versions.json (e.g., oc and go).
+#   - Open a Pull Request (PR) only when values actually change.
+#
+# Behavior:
+#   - Runs nightly (02:00 CET) and can be triggered manually.
+#   - If no upstream version changes, no PR is created (no-op).
+#   - PRs are labeled for easy filtering and audit.
+#
+# References:
+#   - Kubernetes stable.txt: https://kubernetes.io/releases/
+#   - OpenShift oc tags: https://github.com/openshift/oc
+#   - Rancher CLI releases: https://github.com/rancher/cli/releases
+#   - create-pull-request action: https://github.com/peter-evans/create-pull-request
+# ------------------------------------------------------------------------------
+
+name: Auto-Update Upstream Versions (PR)
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # Daily 02:00 CET
+  workflow_dispatch:
+
+jobs:
+  bump-versions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        # Full-pin SHA for actions/checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          fetch-depth: 0
+
+      - name: Discover latest kubectl
+        id: kver
+        shell: bash
+        run: |
+          set -euo pipefail
+          KVER="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+          echo "kver=$KVER" >> "$GITHUB_OUTPUT"
+
+      # Optional: keep oc discovery for informational purposes only (not used to write the file)
+      - name: Discover latest oc tag (informational only)
+        id: ocver
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="$(git ls-remote --tags --refs https://github.com/openshift/oc.git | awk -F/ '{print $NF}' | sort -Vr | head -n1 || true)"
+          if [ -z "${TAG:-}" ]; then TAG="main"; fi
+          echo "ocver=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Discover latest rancher CLI release
+        id: rver
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="$(curl -fsSL https://api.github.com/repos/rancher/cli/releases/latest | jq -r '.tag_name' || true)"
+          if [ -z "${TAG:-}" ] || [ "$TAG" = "null" ]; then
+            TAG="$(git ls-remote --tags --refs https://github.com/rancher/cli.git | awk -F/ '{print $NF}' | sort -Vr | head -n1 || true)"
+          fi
+          echo "rver=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure tool-versions.json exists (initialize if missing, no heredoc)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/config
+          if [ ! -f build/config/tool-versions.json ]; then
+            jq -n \
+              --arg kubectl "v1.35.0" \
+              --arg oc "main" \
+              --arg rancher "v2.13.1" \
+              --arg go "1.25.5" \
+              '{kubectl:$kubectl, oc:$oc, rancher:$rancher, go:$go}' \
+              > build/config/tool-versions.json
+          fi
+
+      - name: Decide if update is needed (compare values)
+        id: should_update
+        shell: bash
+        run: |
+          set -euo pipefail
+          CUR_KUBECTL="$(jq -r '.kubectl' build/config/tool-versions.json)"
+          CUR_RANCHER="$(jq -r '.rancher' build/config/tool-versions.json)"
+          NEW_KUBECTL="${{ steps.kver.outputs.kver }}"
+          NEW_RANCHER="${{ steps.rver.outputs.rver }}"
+
+          # Guard against empty discovery results: treat as "unchanged"
+          if [ -z "${NEW_KUBECTL}" ] || [ "${NEW_KUBECTL}" = "null" ]; then
+            NEW_KUBECTL="${CUR_KUBECTL}"
+          fi
+          if [ -z "${NEW_RANCHER}" ] || [ "${NEW_RANCHER}" = "null" ]; then
+            NEW_RANCHER="${CUR_RANCHER}"
+          fi
+
+          if [ "${CUR_KUBECTL}" != "${NEW_KUBECTL}" ] || [ "${CUR_RANCHER}" != "${NEW_RANCHER}" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "new_k=${NEW_KUBECTL}" >> "$GITHUB_OUTPUT"
+            echo "new_r=${NEW_RANCHER}" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update ONLY kubectl and rancher (preserve oc and go)
+        if: steps.should_update.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp)"
+          jq \
+            --arg kubectl "${{ steps.should_update.outputs.new_k }}" \
+            --arg rancher "${{ steps.should_update.outputs.new_r }}" \
+            '.kubectl = $kubectl | .rancher = $rancher' \
+            build/config/tool-versions.json > "$tmp"
+          mv "$tmp" build/config/tool-versions.json
+
+      - name: Sanity check updated file
+        if: steps.should_update.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Updated build/config/tool-versions.json:"
+          cat build/config/tool-versions.json
+          echo "---- Keys present ----"
+          jq -r 'keys[]' build/config/tool-versions.json
+
+      - name: Create Pull Request
+        if: steps.should_update.outputs.changed == 'true'
+        # Full-pin SHA for peter-evans/create-pull-request v8.0.0
+        uses: peter-evans/create-pull-request@98357b18bf14b5342f975ff684046ec3b2a07725
+        with:
+          title: "chore: bump tool versions (kubectl/rancher)"
+          commit-message: "chore: bump tools - kubectl=${{ steps.should_update.outputs.new_k }}, rancher=${{ steps.should_update.outputs.new_r }}"
+          body: |
+            Automated upstream version bump:
+
+            - kubectl: ${{ steps.should_update.outputs.new_k }} (Kubernetes stable.txt)
+            - oc:      (unchanged: preserved from tool-versions.json - typically 'main')
+            - rancher: ${{ steps.should_update.outputs.new_r }} (Rancher CLI release)
+
+            This PR was created automatically by the enterprise toolchain auto-update workflow.
+          branch: "auto/bump-tools"
+          labels: "automation,toolchain"

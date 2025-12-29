@@ -1,0 +1,351 @@
+# .github/workflows/build-toolchain.yml
+
+name: Build & Release Toolchain
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["master"]
+    paths:
+      - "build/**"
+      - "scripts/release/**"
+      - ".github/workflows/build-toolchain.yml"
+  schedule:
+    - cron: "0 3 * * *" # UTC (03:00)
+
+jobs:
+  build-amd64-cross:
+    name: Cross Build on AMD64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GO_VERSION_DEFAULT: "1.25.5"
+      BUILDER_IMAGE: "ghcr.io/lorenzobiosa/ubi9-toolchain-builder:latest"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Install jq for JSON parsing
+        run: |
+          sudo apt-get update -y || true
+          sudo apt-get install -y jq || true
+
+      - name: Load tool pins from JSON
+        id: pins
+        run: |
+          set -euo pipefail
+          VERSIONS_JSON="build/config/tool-versions.json"
+          [ -f "$VERSIONS_JSON" ] || { echo "[ERROR] Missing $VERSIONS_JSON"; exit 1; }
+          KUBECTL=$(jq -r '.kubectl' "$VERSIONS_JSON")
+          OCREF=$(jq -r '.oc' "$VERSIONS_JSON")
+          RANCHER=$(jq -r '.rancher' "$VERSIONS_JSON")
+          GO_VER=$(jq -r '.go' "$VERSIONS_JSON")
+          printf 'kubectl=%s\n' "${KUBECTL}" >> "$GITHUB_OUTPUT"
+          printf 'ocref=%s\n'   "${OCREF}"    >> "$GITHUB_OUTPUT"
+          printf 'rancher=%s\n' "${RANCHER}"  >> "$GITHUB_OUTPUT"
+          printf 'go=%s\n'      "${GO_VER}"   >> "$GITHUB_OUTPUT"
+
+      - name: Prepare output dirs and caches
+        run: |
+          set -euo pipefail
+          mkdir -p out logs
+          chmod +x build/build-tools.sh
+          for d in ".cache/go-build-amd64" \
+                   ".cache/go-mod-amd64" \
+                   ".cache/dnf-amd64" \
+                   ".cache/ccache-amd64"; do
+            mkdir -p "$d"
+            chmod 777 "$d"
+            chmod -R u+rwX,go+rwX "$d" || true
+          done
+
+      - name: Restore Go build cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .cache/go-build-amd64
+          key: go-build-amd64-${{ steps.pins.outputs.go }}
+
+      - name: Restore Go modules cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .cache/go-mod-amd64
+          key: go-mod-amd64-${{ steps.pins.outputs.go }}
+          restore-keys: |
+            go-mod-amd64-
+
+      - name: Restore DNF cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .cache/dnf-amd64
+          key: dnf-cache-amd64-ubi9-${{ steps.pins.outputs.go }}-${{ steps.pins.outputs.ocref }}
+          restore-keys: |
+            dnf-cache-amd64-ubi9-
+
+      - name: Restore ccache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .cache/ccache-amd64
+          key: ccache-amd64-${{ steps.pins.outputs.ocref }}
+          restore-keys: |
+            ccache-amd64-ubi9-
+
+      - name: Cross Build Toolchain (arm64)
+        env:
+          KUBECTL_VERSION: ${{ steps.pins.outputs.kubectl }}
+          OCREF: ${{ steps.pins.outputs.ocref }}
+          RANCHER_VERSION: ${{ steps.pins.outputs.rancher }}
+          GO_VERSION: ${{ steps.pins.outputs.go || env.GO_VERSION_DEFAULT }}
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/amd64 \
+            --security-opt=no-new-privileges:true \
+            --cap-drop=ALL --cap-add=DAC_OVERRIDE \
+            -e TOOLCHAIN_BUILDER=1 \
+            -e KUBECTL_VERSION -e OCREF -e RANCHER_VERSION -e GO_VERSION \
+            -e OS=linux \
+            -v "$PWD/out:/out" \
+            -v "$PWD/build:/build" \
+            -v "$PWD/.cache/go-build-amd64:/root/.cache/go-build" \
+            -v "$PWD/.cache/go-mod-amd64:/go/pkg/mod" \
+            -v "$PWD/.cache/dnf-amd64:/var/cache/dnf" \
+            -v "$PWD/.cache/ccache-amd64:/root/.ccache" \
+            ${{ env.BUILDER_IMAGE }} \
+            bash -lc '
+              # ---------- ARM64 (CGO con Clang+LLD + sysroot) ----------
+              export GOOS=linux
+              export GOARCH=arm64
+              export CGO_ENABLED=1
+              export CC=clang
+              export CXX=clang++
+              export PKG_CONFIG_SYSROOT_DIR=/opt/sysroot/arm64
+              export PKG_CONFIG_LIBDIR=/opt/sysroot/arm64/usr/lib64/pkgconfig:/opt/sysroot/arm64/usr/lib/pkgconfig
+              export CGO_CFLAGS="--target=aarch64-linux-gnu --sysroot=/opt/sysroot/arm64"
+              export CGO_LDFLAGS="--target=aarch64-linux-gnu --sysroot=/opt/sysroot/arm64 -fuse-ld=lld"
+              export CCACHE_DISABLE=1
+              bash /build/build-tools.sh linux arm64 "${GO_VERSION}"
+            '
+
+      - name: Native Build Toolchain (amd64)
+        env:
+          KUBECTL_VERSION: ${{ steps.pins.outputs.kubectl }}
+          OCREF: ${{ steps.pins.outputs.ocref }}
+          RANCHER_VERSION: ${{ steps.pins.outputs.rancher }}
+          GO_VERSION: ${{ steps.pins.outputs.go || env.GO_VERSION_DEFAULT }}
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/amd64 \
+            --security-opt=no-new-privileges:true \
+            --cap-drop=ALL --cap-add=DAC_OVERRIDE \
+            -e TOOLCHAIN_BUILDER=1 \
+            -e KUBECTL_VERSION -e OCREF -e RANCHER_VERSION -e GO_VERSION \
+            -e OS=linux \
+            -v "$PWD/out:/out" \
+            -v "$PWD/build:/build" \
+            -v "$PWD/.cache/go-build-amd64:/root/.cache/go-build" \
+            -v "$PWD/.cache/go-mod-amd64:/go/pkg/mod" \
+            -v "$PWD/.cache/dnf-amd64:/var/cache/dnf" \
+            -v "$PWD/.cache/ccache-amd64:/root/.ccache" \
+            ${{ env.BUILDER_IMAGE }} \
+            bash -lc '
+              # ---------- AMD64 (CGO per oc, pure-Go per il resto) ----------
+              export GOOS=linux
+              export GOARCH=amd64
+              export CGO_ENABLED=1
+              export CC=gcc
+              export CXX=g++
+              bash /build/build-tools.sh linux amd64 "${GO_VERSION}"
+            '
+
+      - name: Verify artifacts exist
+        run: |
+          set -euo pipefail
+          for a in amd64 arm64; do
+            ART="out/tools-linux-${a}.tar.gz"
+            [ -f "$ART" ] || { echo "::error title=Artifact missing::Expected $ART"; ls -la out; exit 1; }
+            ls -lh "$ART"
+          done
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tools-linux
+          path: |
+            out/tools-linux-amd64.tar.gz
+            out/tools-linux-arm64.tar.gz
+          overwrite: true
+          if-no-files-found: error
+          compression-level: 6
+
+  sign-and-release:
+    name: Sign, Verify & Release
+    runs-on: ubuntu-latest
+    needs: build-amd64-cross
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      actions: read
+    env:
+      TOOLCHAIN_TAG_PREFIX: "toolchain"
+    outputs:
+      base64_subjects: ${{ steps.subjects.outputs.subjects }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Compute release tag
+        id: tag
+        run: |
+          TAG="toolchain-$(date -u +'%Y-%m-%d-%H%M%S')"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: tools-linux
+          path: out
+
+      - name: Install Cosign
+        run: |
+          set -euo pipefail
+          COSIGN_VERSION=2.3.0
+          curl -sSfL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64" -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+          cosign version
+
+      - name: Install Syft
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          syft version
+
+      - name: Setup GPG
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "${GPG_PRIVATE_KEY}" ] || { echo "[ERROR] GPG_PRIVATE_KEY not set"; exit 2; }
+          echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
+          gpg --list-keys
+
+      - name: Sign & Verify
+        env:
+          COSIGN_YES: "true"
+          COSIGN_CERT_OIDC_ISSUER: ${{ vars.COSIGN_CERT_OIDC_ISSUER }}
+          COSIGN_CERT_IDENTITY: ${{ vars.COSIGN_CERT_IDENTITY }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/release/sign-and-verify.sh
+          scripts/release/sign-and-verify.sh \
+            --out-dir ./out \
+            --tag "${{ steps.tag.outputs.tag }}"
+
+      - name: Generate base64-encoded subjects (SHA256 + filenames)
+        id: subjects
+        run: |
+          set -euo pipefail
+          cd out
+          sha256sum tools-linux-amd64.tar.gz tools-linux-arm64.tar.gz | base64 -w0 > subjects.txt
+          echo "subjects=$(cat subjects.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Compose release body (pins + diff)
+        run: |
+          set -euo pipefail
+          PREV_TAG=$(git tag --list "${{ env.TOOLCHAIN_TAG_PREFIX }}-*" | sort -V | tail -n 1)
+          {
+            echo "# Container Toolchain ${{ steps.tag.outputs.tag }}"
+            echo
+            echo "## Toolchain Pins"
+            VERSIONS_JSON="build/config/tool-versions.json"
+            echo "- kubectl:  $(jq -r '.kubectl' "$VERSIONS_JSON")"
+            echo "- oc:       $(jq -r '.oc' "$VERSIONS_JSON")"
+            echo "- rancher:  $(jq -r '.rancher' "$VERSIONS_JSON")"
+            echo "- go:       $(jq -r '.go' "$VERSIONS_JSON")"
+            echo
+            echo "## Checksums"
+            echo "SHA256SUMS is attached as an asset."
+            echo
+            echo "## SBOM"
+            echo "SPDX JSON is attached as an asset."
+            echo
+            echo "## SLSA Provenance"
+            echo "Attestation (.intoto.jsonl) generated with SLSA Generic Generator."
+            echo
+            if [ -n "$PREV_TAG" ]; then
+              echo "## Diff since previous release (${PREV_TAG})"
+              git log --pretty=format:"- %h %s" "${PREV_TAG}..HEAD" || true
+              echo
+            fi
+            echo "## Notes"
+            echo "Marked as **Latest**. GitHub Auto-Generated Release Notes enabled."
+          } > out/RELEASE_BODY.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@5be0e66d93ac7ed76da52eca8bb058f665c3a5fe
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: false
+          make_latest: true
+          generate_release_notes: true
+          body_path: out/RELEASE_BODY.md
+          files: |
+            out/tools-linux-amd64.tar.gz
+            out/tools-linux-arm64.tar.gz
+            out/SHA256SUMS
+            out/sbom.spdx.json
+            out/tools-linux-amd64.cosign.bundle
+            out/tools-linux-arm64.cosign.bundle
+            out/tools-linux-amd64.tar.gz.asc
+            out/tools-linux-arm64.tar.gz.asc
+            out/SHA256SUMS.asc
+
+  # --------------------- SLSA3 provenance (Generic Generator) ------------------
+  slsa-provenance:
+    name: Generate SLSA3 provenance (Generic)
+    needs: [build-amd64-cross, sign-and-release]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f701310a334f5d712a8869541c8e19ecb4eefc24
+    with:
+      base64-subjects: "${{ needs.sign-and-release.outputs.base64_subjects }}"
+      upload-assets: true
+
+  # --------- Nightly: bake prebuilt binaries into builder (optional) -----------
+  bake-prebuilt:
+    name: Bake prebuilt binaries into GHCR builder (nightly)
+    runs-on: ubuntu-latest
+    needs: build-amd64-cross
+    if: github.event_name == 'schedule'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Download artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: tools-linux
+          path: out
+
+      - name: Build & Push builder with prebuilt stash
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+        with:
+          context: .
+          file: build/Dockerfile.prebuilt
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/lorenzobiosa/ubi9-toolchain-builder:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

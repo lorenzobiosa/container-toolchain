@@ -1,0 +1,140 @@
+# .github/dependabot.yml
+# ------------------------------------------------------------------------------
+# Dependabot — Enterprise Configuration
+#
+# Purpose:
+#   Keep repository dependencies current with controlled noise and safe cadence:
+#     - Go modules used by our build scripts and tools.
+#     - GitHub Actions used by CI workflows.
+#     - (Optional) Dockerfiles used in build containers.
+#
+# Key features:
+#   - Groups: consolidate updates to reduce PR noise (per ecosystem).
+#   - Cooldown: wait N days after a release before updating (reduce churn).
+#   - Open PR limit: cap concurrent PRs.
+#   - Ignore rules: opt out of major bumps or specific dependencies.
+#
+# References:
+#   - Options reference: https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+#   - Version updates & grouping: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuring-dependabot-version-updates
+#   - Grouped updates (changelog): https://github.blog/changelog/2023-06-29-grouped-version-updates-for-dependabot-public-beta/
+#   - Minimum package age (cooldown): https://github.blog/changelog/2025-07-01-dependabot-supports-configuration-of-a-minimum-package-age/
+# ------------------------------------------------------------------------------
+
+version: 2
+
+updates:
+  # --------------------------------------------------------------------------
+  # Go modules (root)
+  # --------------------------------------------------------------------------
+  - package-ecosystem: "gomod"
+    directory: "/" # search go.mod/go.sum in repo root
+    schedule:
+      interval: "daily" # check weekdays; adjust to "weekly" if preferred
+      time: "08:00"
+      timezone: "Europe/Rome"
+    open-pull-requests-limit: 5
+    # Cooldown: wait at least N days before opening a PR for new releases
+    # (reduces noise from fast-moving libraries; still receive security updates)
+    # See GitHub changelog for details.
+    # Note: If your org policy prefers weekly, set interval: "weekly" and keep cooldown.
+    cooldown:
+      days: 3
+
+    # Group dependencies to reduce PR sprawl; one PR per group
+    groups:
+      go-deps:
+        patterns:
+          - "*" # group all go module updates together
+
+    # Commit message and PR labels aligned with release notes categories
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+    labels:
+      - "dependencies"
+      - "ci"
+      - "tooling"
+
+    # Optional ignore: skip semver-major (review majors manually)
+    # You may remove this if you prefer to accept majors.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # --------------------------------------------------------------------------
+  # GitHub Actions (workflows under .github/workflows)
+  # Note: directory must be "/" (not .github/workflows) per official docs.
+  # --------------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Europe/Rome"
+    open-pull-requests-limit: 5
+
+    cooldown:
+      days: 3
+
+    groups:
+      actions-deps:
+        patterns:
+          - "*" # one grouped PR for Actions updates
+
+    commit-message:
+      prefix: "chore(actions)"
+      include: "scope"
+
+    labels:
+      - "dependencies"
+      - "ci"
+      - "tooling"
+
+    # Example ignore (optional): skip majors for high-risk actions
+    # ignore:
+    #   - dependency-name: "actions/*"
+    #     update-types: ["version-update:semver-major"]
+
+  # --------------------------------------------------------------------------
+  # Docker (optional): enable if repo contains Dockerfiles to keep base images fresh
+  # --------------------------------------------------------------------------
+  - package-ecosystem: "docker"
+    directory: "/" # scans Dockerfiles in repo; adjust directories if needed
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "09:30"
+      timezone: "Europe/Rome"
+    open-pull-requests-limit: 3
+
+    cooldown:
+      days: 5 # Docker base image churn can be higher; wait longer
+
+    groups:
+      docker-images:
+        patterns:
+          - "*" # group Docker base image bumps into one PR
+
+    commit-message:
+      prefix: "chore(docker)"
+      include: "scope"
+
+    labels:
+      - "dependencies"
+      - "ci"
+      - "tooling"
+
+    # Example ignore: avoid major jumps of specific bases (manual review)
+    # ignore:
+    #   - dependency-name: "php"
+    #     versions: ["~> 8.4"]    # ignore 8.4 line; keep at 8.3 as policy
+# Top-level: define registries for private deps if needed (Go proxy, GHCR, etc.)
+# registries:
+#   ghcr:
+#     type: "docker-registry"
+#     url: "ghcr.io"
+#     username: "${{secrets.GHCR_USER}}"
+#     password: "${{secrets.GHCR_TOKEN}}"

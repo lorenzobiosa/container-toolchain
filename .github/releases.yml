@@ -1,0 +1,57 @@
+# .github/release.yml
+# ------------------------------------------------------------------------------
+# GitHub Auto-Generated Release Notes Configuration (Enterprise)
+#
+# Purpose:
+#   Customize categories and exclusions for automatically generated release notes.
+#   Applied when creating a release from a tag that contains this file.
+#
+# References:
+#   - Auto-generated release notes & customization:
+#     https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
+#   - Example patterns & options:
+#     https://paulund.co.uk/github-release-template
+# ------------------------------------------------------------------------------
+
+changelog:
+  # Global exclusions: omit routine/automated updates from the release notes.
+  exclude:
+    labels:
+      - skip-changelog # Opt-out label for non-user-facing PRs
+      - dependencies # Routine dependency update PRs
+    authors:
+      - dependabot[bot] # Automated dependency updates
+
+  # Categories: group PRs by labels for clearer, enterprise-style notes.
+  categories:
+    - title: 🚀 Features
+      labels:
+        - feature
+        - enhancement
+
+    - title: 🐛 Bug Fixes
+      labels:
+        - bug
+        - fix
+
+    - title: 🔒 Security
+      labels:
+        - security
+
+    - title: ⚠️ Breaking Changes
+      labels:
+        - breaking-change
+
+    - title: 🧰 CI / Tooling
+      labels:
+        - ci
+        - tooling
+
+    - title: 📚 Documentation
+      labels:
+        - docs
+
+    # Catch-all: any PR not matched above
+    - title: Other Changes
+      labels:
+        - "*"

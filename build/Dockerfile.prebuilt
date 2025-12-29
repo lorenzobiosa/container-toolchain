@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1.7
+#
+# UBI9 builder + prebuilt toolchain tarballs baked into the image
+# - Copies previously built artifacts into /opt/prebuilt
+# - Extracts binaries for fast-path usage during CI runs
+
+FROM ghcr.io/lorenzobiosa/ubi9-toolchain-builder:latest AS base
+
+# (Optional) allow overriding artifact paths at build time
+ARG AMD64_TARBALL=out/tools-linux-amd64.tar.gz
+ARG ARM64_TARBALL=out/tools-linux-arm64.tar.gz
+
+# Copy tarballs into the prebuilt stash
+# Note: these must exist in the build context (the workflow downloads them to ./out before this build)
+COPY ${AMD64_TARBALL} /opt/prebuilt/linux-amd64/tools-linux-amd64.tar.gz
+COPY ${ARM64_TARBALL} /opt/prebuilt/linux-arm64/tools-linux-arm64.tar.gz
+
+# Extract binaries and validate presence
+# - Fail early if tarballs are missing/empty
+# - Ensure kubectl/oc/rancher exist and are executable in the stash
+RUN set -euo pipefail \
+    && mkdir -p /opt/prebuilt/linux-amd64/bin /opt/prebuilt/linux-arm64/bin \
+    && test -s /opt/prebuilt/linux-amd64/tools-linux-amd64.tar.gz \
+    && test -s /opt/prebuilt/linux-arm64/tools-linux-arm64.tar.gz \
+    && tar -xzf /opt/prebuilt/linux-amd64/tools-linux-amd64.tar.gz -C /opt/prebuilt/linux-amd64/bin \
+    && tar -xzf /opt/prebuilt/linux-arm64/tools-linux-arm64.tar.gz -C /opt/prebuilt/linux-arm64/bin \
+    && ls -l /opt/prebuilt/linux-amd64/bin \
+    && ls -l /opt/prebuilt/linux-arm64/bin \
+    && for arch in linux-amd64 linux-arm64; do \
+    for b in kubectl oc rancher; do \
+    test -x "/opt/prebuilt/${arch}/bin/${b}"; \
+    done; \
+    done
+
+# Simple CMD to signal the stash is ready (keeps image semantics explicit)
+CMD ["/bin/bash", "-lc", "echo 'builder with prebuilt stash ready'"]

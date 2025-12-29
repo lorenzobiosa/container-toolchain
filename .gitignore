@@ -1,0 +1,107 @@
+# ------------------------------------------------------------------------------
+# Container Toolchain — .gitignore
+# ------------------------------------------------------------------------------
+
+# === Build & local output ======================================================
+out/
+logs/
+tmp/
+dist/
+.cache/
+*.tmp
+
+# Toolchain release byproducts (local-only; CI publishes as release assets)
+*.asc
+*.cosign.bundle
+SHA256SUMS
+sbom.spdx.json
+
+# Tarballs and archives generated locally
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+
+# === Language & tooling artifacts =============================================
+# Go
+bin/
+vendor/
+go.work
+go.work.sum
+
+# Node / npm (if scripts/tools use it)
+node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# Python (if used for helper scripts)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg*
+.eggs/
+pip-wheel-metadata/
+venv/
+.env
+
+# Shell (temporary files)
+*.swp
+*.swo
+
+# === Editors & IDEs ============================================================
+# VS Code
+.vscode/
+.history/
+.code-workspace
+
+# JetBrains
+.idea/
+*.iml
+
+# Sublime
+*.sublime-project
+*.sublime-workspace
+
+# === OS-specific noise =========================================================
+# macOS
+.DS_Store
+.AppleDouble
+.AppleDB
+.apdisk
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# === Git / CI helpers =========================================================
+# Git
+.git-credentials
+.gitconfig.local
+
+# GitHub Actions runner / logs (if any collected locally)
+.github/.DS_Store
+
+# === Container & OCI (optional, if used locally) ==============================
+# Docker / Podman build caches
+**/.dockerignore
+docker-build/
+podman-build/
+
+# === Security & keys (never commit) ===========================================
+# (Keys are provided via GitHub Secrets / local env only)
+*.pem
+*.key
+*.crt
+*.pub
+
+# ------------------------------------------------------------------------------
+# Notes:
+# - CI generates and attaches release assets (tar.gz, SBOM, checksums, signatures)
+#   to GitHub Releases; keep local copies ignored.
+# - If you add language-specific tooling, append its standard ignore entries here.
+# ------------------------------------------------------------------------------

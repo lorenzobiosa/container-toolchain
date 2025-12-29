@@ -1,0 +1,48 @@
+# .github/workflows/security.yml
+# ------------------------------------------------------------------------------
+# Security Checks — CI Secret Scanning (Gitleaks via Docker + SARIF Upload)
+# ------------------------------------------------------------------------------
+
+name: Security Checks
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "0 0 * * 0" # Sunday 00:00 CET
+  workflow_dispatch:
+
+permissions:
+  contents: read # required for checkout
+  security-events: write # required to upload SARIF to Code Scanning
+
+jobs:
+  secret-scan:
+    name: CI Secret Scan (Gitleaks)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          fetch-depth: 0 # full history if you want full git scanning
+
+      - name: Run Gitleaks via Docker (pinned 8.30.)
+        run: |
+          set -euxo pipefail
+          docker run --rm \
+            -v "${PWD}:/repo" \
+            ghcr.io/gitleaks/gitleaks:v8.30.0 \
+            detect \
+              --source="/repo" \
+              --redact \
+              --report-format sarif \
+              --report-path "/repo/gitleaks.sarif"
+
+      - name: Upload SARIF to Code Scanning
+        uses: github/codeql-action/upload-sarif@5ab5aef07979436fcc7f5da1f799a5224047d84a
+        with:
+          sarif_file: gitleaks.sarif
+          category: secret-scan

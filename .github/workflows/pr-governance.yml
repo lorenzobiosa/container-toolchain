@@ -1,0 +1,187 @@
+# ------------------------------------------------------------------------------
+# PR Governance — Validation & Automation
+#
+# Purpose:
+#   Enforce PR hygiene and alignment with release notes categories:
+#     - Validate mandatory checklist items from the PR template.
+#     - Enforce semantic PR title pattern.
+#     - Auto-apply labels mapped to .github/release.yml categories.
+#     - Link PR to referenced issues for traceability.
+#
+# Triggers:
+#   - On PR open/edit/reopen/sync to keep state consistent across updates.
+#
+# Security & Permissions:
+#   - Minimal scopes: read repo contents; write issues/pull-requests only.
+#   - No privilege escalation or publishing.
+#
+# Notes:
+#   - Ensure the repository has a PR template that contains the required checklist.
+#   - Ensure .github/release.yml exists and defines categories consistent with labels.
+#     (GitHub applies auto-generated release notes from the configuration present
+#      in the commit referenced by the release tag.)
+# ------------------------------------------------------------------------------
+
+name: PR Governance
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  validate-and-assign:
+    name: Validate PR checklist, title, labels & issue links
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------
+      # Checkout is needed for potential future extensions
+      # (e.g., reading local policy files, CODEOWNERS).
+      # -----------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+
+      # -----------------------------------------------------------
+      # Install GitHub CLI for robust PR/Issue operations.
+      # Authentication uses the ephemeral GITHUB_TOKEN provided
+      # by the workflow runtime (scoped by 'permissions' above).
+      # -----------------------------------------------------------
+      - name: Install GitHub CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y gh
+          # Configure token for gh
+          gh auth setup-git
+          gh auth status
+
+      # -----------------------------------------------------------
+      # Extract PR metadata (title, body)
+      # -----------------------------------------------------------
+      - name: Extract PR body and title
+        id: pr_info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          PR_BODY=$(gh pr view "${PR_NUM}" --json body   -q .body)
+          PR_TITLE=$(gh pr view "${PR_NUM}" --json title -q .title)
+          echo "PR_BODY<<EOF" >> $GITHUB_ENV
+          echo "${PR_BODY}" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "PR_TITLE=${PR_TITLE}" >> $GITHUB_ENV
+
+      # -----------------------------------------------------------
+      # Validate the checklist
+      # All items must be checked as "- [x] ..."
+      # Ensure your PR template includes these items verbatim.
+      # -----------------------------------------------------------
+      - name: Validate checklist items
+        env:
+          PR_BODY: ${{ env.PR_BODY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+        run: |
+          REQUIRED_ITEMS=(
+            "Code follows repository style and conventions"
+            "Tests added / updated to cover changes"
+            "Documentation updated if needed"
+            "CI passes on all relevant platforms"
+            "Changes linked to at least one issue"
+            "Reviewer(s) assigned for code review"
+            "PR title follows semantic pattern"
+          )
+
+          FAILED=0
+          for ITEM in "${REQUIRED_ITEMS[@]}"; do
+            if ! echo "$PR_BODY" | grep -Fq "- [x] $ITEM"; then
+              echo "❌ Checklist item not completed: $ITEM"
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -eq 1 ]; then
+            gh pr comment ${{ github.event.pull_request.number }} \
+              --body "⚠️ Some required checklist items are missing. Please complete the PR checklist in the PR template."
+            exit 1
+          fi
+
+      # -----------------------------------------------------------
+      # Enforce semantic PR title pattern
+      # Accepted patterns (extend as needed):
+      #   [Feature] <description>
+      #   [Bug] <description>
+      #   [Security] <description>
+      #   [Docs] <description>
+      #   [CI] <description>
+      #   [Tooling] <description>
+      #   [Breaking-Change] <description>
+      #
+      # These labels map to .github/release.yml categories:
+      #   - feature/enhancement → 🚀 Features
+      #   - bug/fix → 🐛 Bug Fixes
+      #   - security → 🔒 Security
+      #   - breaking-change → ⚠️ Breaking Changes
+      #   - ci/tooling → 🧰 CI / Tooling
+      #   - docs → 📚 Documentation
+      # -----------------------------------------------------------
+      - name: Enforce semantic PR title
+        env:
+          PR_TITLE: ${{ env.PR_TITLE }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+        run: |
+          PATTERN='^\[(Feature|Bug|Security|Docs|CI|Tooling|Breaking-Change)\]\s.+'
+          if ! echo "$PR_TITLE" | grep -E "$PATTERN" >/dev/null; then
+            gh pr comment ${{ github.event.pull_request.number }} \
+              --body "⚠️ PR title must follow the semantic pattern: \`[Type] Your concise description\` (Types: Feature | Bug | Security | Docs | CI | Tooling | Breaking-Change)."
+            exit 1
+          fi
+
+      # -----------------------------------------------------------
+      # Auto-assign labels based on semantic title
+      # Labels must exist in the repository:
+      #   feature, bug, security, docs, ci, tooling, breaking-change
+      # These align with .github/release.yml categories for auto-generated notes.
+      # -----------------------------------------------------------
+      - name: Auto-assign labels based on PR title
+        env:
+          PR_TITLE: ${{ env.PR_TITLE }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          case "$PR_TITLE" in
+            \[Feature\]*)          gh pr edit "$PR" --add-label "feature" ;;
+            \[Bug\]*)              gh pr edit "$PR" --add-label "bug" ;;
+            \[Security\]*)         gh pr edit "$PR" --add-label "security" ;;
+            \[Docs\]*)             gh pr edit "$PR" --add-label "docs" ;;
+            \[CI\]*)               gh pr edit "$PR" --add-label "ci" ;;
+            \[Tooling\]*)          gh pr edit "$PR" --add-label "tooling" ;;
+            \[Breaking-Change\]*)  gh pr edit "$PR" --add-label "breaking-change" ;;
+          esac
+
+      # -----------------------------------------------------------
+      # Auto-link to referenced issues
+      # Detect any #123 patterns in PR body and cross-comment for traceability.
+      # -----------------------------------------------------------
+      - name: Auto-link to related issues
+        env:
+          PR_BODY: ${{ env.PR_BODY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          ISSUE_NUMBERS=$(echo "$PR_BODY" | grep -oE '#[0-9]+' | tr -d '#')
+          for NUM in $ISSUE_NUMBERS; do
+            gh pr comment "$PR" --body "Linked to issue #$NUM"
+            gh issue comment "$NUM" --body "PR #$PR references this issue"
+          done
+
+      # -----------------------------------------------------------
+      # Success marker
+      # -----------------------------------------------------------
+      - name: Success
+        run: echo "✅ PR passes checks; labels & issue links applied."
