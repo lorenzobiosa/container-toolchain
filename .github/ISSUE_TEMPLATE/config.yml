@@ -1,14 +1,1 @@
 blank_issues_enabled: false
-
-contact_links:
-  - name: 📖 Documentation
-    url: https://github.com/ORG/REPO/wiki
-    about: Please check the documentation before opening an issue.
-
-  - name: 🛡️ Security Issues
-    url: https://github.com/ORG/REPO/security/policy
-    about: Please report security vulnerabilities via our Security Policy.
-
-  - name: 💬 Support / Questions
-    url: https://github.com/ORG/REPO/discussions
-    about: Use GitHub Discussions for questions or general support.
