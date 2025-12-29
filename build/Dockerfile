@@ -1,10 +1,10 @@
+# syntax=docker/dockerfile:1.7
 # ------------------------------------------------------------------------------
 # Container Toolchain Builder (UBI9)
 # Purpose: Build and package kubectl, oc (OpenShift), and rancher CLI with
 #          amd64 host toolchain and arm64 cross-compile sysroot.
 # Author: Lorenzo Biosa <lorenzo@biosa-labs.com> © Biosa Labs
 # ------------------------------------------------------------------------------
-# syntax=docker/dockerfile:1.7
 
 # --- Base image (parameterized) ---
 ARG BASE_IMAGE=registry.access.redhat.com/ubi9/ubi:latest
@@ -85,7 +85,7 @@ ENV WELCOME_ENABLE=${WELCOME_ENABLE} \
     COMPANY_NAME="${COMPANY_NAME}"
 
 # --- Copy external prompt/welcome scripts ---
-COPY build/config/prompt/{00-welcome.sh,10-ps1.sh} /etc/profile.d/
+COPY build/config/prompt/ /etc/profile.d/
 
 # ------------------------------------------------------------------------------
 # Single optimized RUN layer (no cache mount; cache handled by CI):

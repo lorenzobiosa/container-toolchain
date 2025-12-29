@@ -51,6 +51,12 @@ jobs:
           echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
+      - name: Validate prompt files present
+        run: |
+          set -euo pipefail
+          test -f build/config/prompt/00-welcome.sh || { echo "::error ::Missing build/config/prompt/00-welcome.sh"; exit 1; }
+          test -f build/config/prompt/10-ps1.sh     || { echo "::error ::Missing build/config/prompt/10-ps1.sh"; exit 1; }
+
       - name: Build & Push # multi-arch
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
         with:
