@@ -7,7 +7,7 @@ on:
     branches: ["master"]
     paths:
       - "build/Dockerfile"
-      - "config/prompt/**"
+      - "build/config/prompt/**"
       - ".github/workflows/build-builder-image.yml"
 
 jobs:
@@ -28,6 +28,7 @@ jobs:
       IMAGE_DESCRIPTION: "UBI9-based builder with Go toolchain and ARM64 sysroot for cross-compilation of tools"
       IMAGE_VENDOR: "Lorenzo Biosa"
       IMAGE_LICENSES: "MIT"
+      BASE_IMAGE: "registry.access.redhat.com/ubi9/ubi:latest"
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -63,6 +64,7 @@ jobs:
           cache-to: type=gha,mode=max
           # Pass Dockerfile build args so banner/prompt & sudo are parametrized at build time
           build-args: |
+            BASE_IMAGE=${{ env.BASE_IMAGE }}
             GO_VERSION=${{ env.GO_VERSION }}
             ENABLE_SUDO=${{ env.ENABLE_SUDO }}
             PROMPT_ENABLE_COLORS=${{ env.PROMPT_ENABLE_COLORS }}

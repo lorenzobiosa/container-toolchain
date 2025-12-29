@@ -85,8 +85,7 @@ ENV WELCOME_ENABLE=${WELCOME_ENABLE} \
     COMPANY_NAME="${COMPANY_NAME}"
 
 # --- Copy external prompt/welcome scripts ---
-COPY config/prompt/00-welcome.sh /etc/profile.d/00-welcome.sh
-COPY config/prompt/10-ps1.sh /etc/profile.d/10-ps1.sh
+COPY build/config/prompt/{00-welcome.sh,10-ps1.sh} /etc/profile.d/
 
 # ------------------------------------------------------------------------------
 # Single optimized RUN layer (no cache mount; cache handled by CI):
