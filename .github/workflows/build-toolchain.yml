@@ -286,14 +286,18 @@ jobs:
             echo "Marked as **Latest**. GitHub Auto-Generated Release Notes enabled."
           } > out/RELEASE_BODY.md
 
-      - name: Create GitHub Release
+      - name: Debug release tag
+        run: echo "Computed tag = '${{ steps.tag.outputs.tag }}'"
+
+      # --- Create release as draft (consente upload asset con immutabilità) ---
+      - name: Create GitHub Release (draft)
         uses: softprops/action-gh-release@5be0e66d93ac7ed76da52eca8bb058f665c3a5fe
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
-          draft: false
+          draft: true # ⬅️ cambia a true
           prerelease: false
-          make_latest: true
+          make_latest: false # ⬅️ pubblichiamo nello step successivo
           generate_release_notes: true
           body_path: out/RELEASE_BODY.md
           files: |
@@ -306,6 +310,17 @@ jobs:
             out/tools-linux-amd64.tar.gz.asc
             out/tools-linux-arm64.tar.gz.asc
             out/SHA256SUMS.asc
+
+      # --- Pubblica la release (diventa immutabile dopo aver allegato gli asset) ---
+      - name: Publish release (make latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release edit "${{ steps.tag.outputs.tag }}" \
+            --draft=false \
+            --latest \
+            --notes-file out/RELEASE_BODY.md
 
   # --------------------- SLSA3 provenance (Generic Generator) ------------------
   slsa-provenance:
