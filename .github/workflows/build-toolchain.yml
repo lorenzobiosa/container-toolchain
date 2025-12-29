@@ -151,7 +151,6 @@ jobs:
             -v "$PWD/.cache/go-mod-amd64:/go/pkg/mod" \
             -v "$PWD/.cache/dnf-amd64:/var/cache/dnf" \
             -v "$PWD/.cache/ccache-amd64:/root/.ccache" \
-            -v "$PWD/config/prompt:/etc/profile.d" \
             ${{ env.BUILDER_IMAGE }} \
             bash -lc '
               # ---------- AMD64 (CGO per oc, pure-Go per il resto) ----------

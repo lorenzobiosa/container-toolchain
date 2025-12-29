@@ -7,7 +7,8 @@ on:
     branches: ["master"]
     paths:
       - "build/Dockerfile"
-      - ".github/workflows/build-image.yml"
+      - "config/prompt/**"
+      - ".github/workflows/build-builder-image.yml"
 
 jobs:
   build-push:
@@ -19,6 +20,14 @@ jobs:
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ghcr.io/lorenzobiosa/ubi9-toolchain-builder
+      GO_VERSION: "1.25.5"
+      ENABLE_SUDO: "1"
+      PROMPT_ENABLE_COLORS: "1"
+      WELCOME_ENABLE: "1"
+      IMAGE_TITLE: "UBI9 Container Toolchain Builder"
+      IMAGE_DESCRIPTION: "UBI9-based builder with Go toolchain and ARM64 sysroot for cross-compilation of tools"
+      IMAGE_VENDOR: "Lorenzo Biosa"
+      IMAGE_LICENSES: "MIT"
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -33,6 +42,14 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute build metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          echo "revision=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
       - name: Build & Push # multi-arch
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
         with:
@@ -44,3 +61,16 @@ jobs:
             ${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Pass Dockerfile build args so banner/prompt & sudo are parametrized at build time
+          build-args: |
+            GO_VERSION=${{ env.GO_VERSION }}
+            ENABLE_SUDO=${{ env.ENABLE_SUDO }}
+            PROMPT_ENABLE_COLORS=${{ env.PROMPT_ENABLE_COLORS }}
+            WELCOME_ENABLE=${{ env.WELCOME_ENABLE }}
+            IMAGE_TITLE=${{ env.IMAGE_TITLE }}
+            IMAGE_DESCRIPTION=${{ env.IMAGE_DESCRIPTION }}
+            IMAGE_VENDOR=${{ env.IMAGE_VENDOR }}
+            IMAGE_LICENSES=${{ env.IMAGE_LICENSES }}
+            VCS_REF=${{ steps.meta.outputs.revision }}
+            BUILD_DATE=${{ steps.meta.outputs.created }}
+            IMAGE_VERSION=${{ steps.meta.outputs.version }}
