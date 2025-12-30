@@ -1,25 +1,26 @@
 # ------------------------------------------------------------------------------
-# PR Governance — Validation & Automation
-#
+# PR Governance — Validation & Automation (GitHub Actions Workflow)
 # Purpose:
-#   Enforce PR hygiene and alignment with release notes categories:
-#     - Validate mandatory checklist items from the PR template.
-#     - Enforce semantic PR title pattern.
-#     - Auto-apply labels mapped to .github/release.yml categories.
-#     - Link PR to referenced issues for traceability.
+#   - Enforce PR hygiene and alignment with release note categories
+#   - Validate mandatory checklist items from PR template (robust parsing)
+#   - Enforce semantic PR title pattern (enterprise-approved types)
+#   - Auto-apply labels based on semantic title
+#   - Link PR to referenced issues for traceability
+# Author: Lorenzo Biosa <lorenzo@biosa-labs.com> © Biosa Labs
 #
 # Triggers:
-#   - On PR open/edit/reopen/sync to keep state consistent across updates.
+#   - On PR open/edit/reopen/synchronize to keep state consistent across updates
 #
 # Security & Permissions:
-#   - Minimal scopes: read repo contents; write issues/pull-requests only.
-#   - No privilege escalation or publishing.
+#   - Minimal scopes: read repo contents; write issues/pull-requests only
+#   - No privilege escalation or publishing beyond labels/comments
 #
 # Notes:
-#   - Ensure the repository has a PR template that contains the required checklist.
-#   - Ensure .github/release.yml exists and defines categories consistent with labels.
-#     (GitHub applies auto-generated release notes from the configuration present
-#      in the commit referenced by the release tag.)
+#   - Ensure the repository has a PR template (.github/PULL_REQUEST_TEMPLATE.md)
+#     that contains the required checklist items.
+#   - Ensure .github/release.yml exists with categories consistent with labels.
+#   - This workflow uses robust JSON extraction via `gh api` and tolerant regexes
+#     to minimize false negatives in checklist validation.
 # ------------------------------------------------------------------------------
 
 name: PR Governance
@@ -39,54 +40,68 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # -----------------------------------------------------------
-      # Checkout is needed for potential future extensions
-      # (e.g., reading local policy files, CODEOWNERS).
-      # -----------------------------------------------------------
+      # ------------------------------------------------------------------------
+      # Checkout is kept for potential future extensions (e.g., local policies)
+      # ------------------------------------------------------------------------
       - name: Checkout repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        uses: actions/checkout@v4
 
-      # -----------------------------------------------------------
-      # Install GitHub CLI for robust PR/Issue operations.
-      # Authentication uses the ephemeral GITHUB_TOKEN provided
-      # by the workflow runtime (scoped by 'permissions' above).
-      # -----------------------------------------------------------
-      - name: Install GitHub CLI
+      # ------------------------------------------------------------------------
+      # Install GitHub CLI and jq for robust PR/Issue operations and JSON parsing
+      # Authentication uses the ephemeral GITHUB_TOKEN provided by the runner.
+      # ------------------------------------------------------------------------
+      - name: Install GitHub CLI & jq
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           sudo apt-get update -y
-          sudo apt-get install -y gh
-          # Configure token for gh
-          gh auth setup-git
+          sudo apt-get install -y gh jq
+          # Verify auth context
           gh auth status
 
-      # -----------------------------------------------------------
-      # Extract PR metadata (title, body)
-      # -----------------------------------------------------------
-      - name: Extract PR body and title
+      # ------------------------------------------------------------------------
+      # Extract PR title and body safely using REST API (`gh api`).
+      # - Trim title to avoid regex false negatives due to trailing spaces.
+      # - Export body via multiline GITHUB_ENV block to preserve content.
+      # ------------------------------------------------------------------------
+      - name: Extract PR body and title (robust)
         id: pr_info
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          PR_NUM="${{ github.event.pull_request.number }}"
-          PR_BODY=$(gh pr view "${PR_NUM}" --json body   -q .body)
-          PR_TITLE=$(gh pr view "${PR_NUM}" --json title -q .title)
-          echo "PR_BODY<<EOF" >> $GITHUB_ENV
-          echo "${PR_BODY}" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-          echo "PR_TITLE=${PR_TITLE}" >> $GITHUB_ENV
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+          DATA="$(gh api repos/${REPO}/pulls/${PR})"
 
-      # -----------------------------------------------------------
-      # Validate the checklist
-      # All items must be checked as "- [x] ..."
-      # Ensure your PR template includes these items verbatim.
-      # -----------------------------------------------------------
+          PR_TITLE="$(jq -r '.title // ""' <<< "${DATA}")"
+          PR_BODY="$(jq -r '.body  // ""' <<< "${DATA}")"
+
+          # Trim leading/trailing whitespace from title
+          PR_TITLE_TRIMMED="$(printf '%s' "${PR_TITLE}" | sed 's/^[[:space:]]\+//; s/[[:space:]]\+$//')"
+
+          {
+            echo "PR_TITLE=${PR_TITLE_TRIMMED}"
+            echo 'PR_BODY<<EOF'
+            echo "${PR_BODY}"
+            echo 'EOF'
+          } >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------------------
+      # Validate the checklist items (tolerant regex):
+      # - Accepts "-" or "*" bullets
+      # - Accepts `[x]` or `[X]`
+      # - Ignores leading spaces and capitalization differences
+      # ------------------------------------------------------------------------
       - name: Validate checklist items
         env:
           PR_BODY: ${{ env.PR_BODY }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          LC_ALL=C
+
           REQUIRED_ITEMS=(
             "Code follows repository style and conventions"
             "Tests added / updated to cover changes"
@@ -99,7 +114,8 @@ jobs:
 
           FAILED=0
           for ITEM in "${REQUIRED_ITEMS[@]}"; do
-            if ! echo "$PR_BODY" | grep -Fq "- [x] $ITEM"; then
+            # Matches lines like: "- [x] ITEM" or "* [X] ITEM" with optional spaces
+            if ! printf '%s\n' "$PR_BODY" | grep -iEq "^[[:space:]]*[-*][[:space:]]*\[[xX]\][[:space:]]*$ITEM"; then
               echo "❌ Checklist item not completed: $ITEM"
               FAILED=1
             fi
@@ -107,52 +123,40 @@ jobs:
 
           if [ "$FAILED" -eq 1 ]; then
             gh pr comment ${{ github.event.pull_request.number }} \
-              --body "⚠️ Some required checklist items are missing. Please complete the PR checklist in the PR template."
+              --body "⚠️ Some required checklist items appear missing or unchecked. Please complete the PR checklist in the template."
             exit 1
           fi
 
-      # -----------------------------------------------------------
-      # Enforce semantic PR title pattern
-      # Accepted patterns (extend as needed):
-      #   [Feature] <description>
-      #   [Bug] <description>
-      #   [Security] <description>
-      #   [Docs] <description>
-      #   [CI] <description>
-      #   [Tooling] <description>
-      #   [Breaking-Change] <description>
-      #
-      # These labels map to .github/release.yml categories:
-      #   - feature/enhancement → 🚀 Features
-      #   - bug/fix → 🐛 Bug Fixes
-      #   - security → 🔒 Security
-      #   - breaking-change → ⚠️ Breaking Changes
-      #   - ci/tooling → 🧰 CI / Tooling
-      #   - docs → 📚 Documentation
-      # -----------------------------------------------------------
+      # ------------------------------------------------------------------------
+      # Enforce semantic PR title pattern (trimmed):
+      # Accepted types:
+      #   [Feature], [Bug], [Security], [Docs], [CI], [Tooling], [Breaking-Change]
+      # ------------------------------------------------------------------------
       - name: Enforce semantic PR title
         env:
           PR_TITLE: ${{ env.PR_TITLE }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          LC_ALL=C
           PATTERN='^\[(Feature|Bug|Security|Docs|CI|Tooling|Breaking-Change)\]\s.+'
-          if ! echo "$PR_TITLE" | grep -E "$PATTERN" >/dev/null; then
+          if ! printf '%s' "$PR_TITLE" | grep -E "$PATTERN" >/dev/null; then
             gh pr comment ${{ github.event.pull_request.number }} \
               --body "⚠️ PR title must follow the semantic pattern: \`[Type] Your concise description\` (Types: Feature | Bug | Security | Docs | CI | Tooling | Breaking-Change)."
             exit 1
           fi
 
-      # -----------------------------------------------------------
-      # Auto-assign labels based on semantic title
-      # Labels must exist in the repository:
-      #   feature, bug, security, docs, ci, tooling, breaking-change
-      # These align with .github/release.yml categories for auto-generated notes.
-      # -----------------------------------------------------------
+      # ------------------------------------------------------------------------
+      # Auto-assign labels based on the semantic title.
+      # Ensure labels exist in the repository: feature, bug, security, docs, ci,
+      # tooling, breaking-change.
+      # ------------------------------------------------------------------------
       - name: Auto-assign labels based on PR title
         env:
           PR_TITLE: ${{ env.PR_TITLE }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           PR=${{ github.event.pull_request.number }}
           case "$PR_TITLE" in
             \[Feature\]*)          gh pr edit "$PR" --add-label "feature" ;;
@@ -164,24 +168,25 @@ jobs:
             \[Breaking-Change\]*)  gh pr edit "$PR" --add-label "breaking-change" ;;
           esac
 
-      # -----------------------------------------------------------
-      # Auto-link to referenced issues
-      # Detect any #123 patterns in PR body and cross-comment for traceability.
-      # -----------------------------------------------------------
+      # ------------------------------------------------------------------------
+      # Auto-link to related issues:
+      # Detect '#123' patterns and cross-comment for traceability.
+      # ------------------------------------------------------------------------
       - name: Auto-link to related issues
         env:
           PR_BODY: ${{ env.PR_BODY }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           PR=${{ github.event.pull_request.number }}
-          ISSUE_NUMBERS=$(echo "$PR_BODY" | grep -oE '#[0-9]+' | tr -d '#')
+          ISSUE_NUMBERS=$(printf '%s' "$PR_BODY" | grep -oE '#[0-9]+' | tr -d '#')
           for NUM in $ISSUE_NUMBERS; do
             gh pr comment "$PR" --body "Linked to issue #$NUM"
             gh issue comment "$NUM" --body "PR #$PR references this issue"
           done
 
-      # -----------------------------------------------------------
+      # ------------------------------------------------------------------------
       # Success marker
-      # -----------------------------------------------------------
+      # ------------------------------------------------------------------------
       - name: Success
         run: echo "✅ PR passes checks; labels & issue links applied."
