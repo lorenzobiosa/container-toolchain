@@ -1,4 +1,13 @@
-# .github/workflows/build-toolchain.yml
+# ------------------------------------------------------------------------------
+# Build & Release Toolchain (GitHub Actions Workflow)
+# Purpose:
+#   - Build kubectl, oc (OpenShift), and rancher CLI for amd64 and arm64
+#   - Package artifacts, sign them, and publish a release
+#   - Nightly: bake prebuilt binaries into the builder image for fast CI paths
+# Author: Lorenzo Biosa <lorenzo@biosa-labs.com> © Biosa Labs
+# Notes:
+#   - Caches are managed by CI; Dockerfiles do not mount/remove CI caches.
+# ------------------------------------------------------------------------------
 
 name: Build & Release Toolchain
 
@@ -11,9 +20,13 @@ on:
       - "scripts/release/**"
       - ".github/workflows/build-toolchain.yml"
   schedule:
-    - cron: "0 3 * * *" # UTC (03:00)
+    - cron: "0 3 * * *" # UTC (03:00) — nightly build for prebuilt stash baking
 
 jobs:
+  # --------------------------------------------------------------------------
+  # Build (on amd64 runner): cross-compile arm64 and build native amd64
+  # Produces tool tarballs: out/tools-linux-{amd64,arm64}.tar.gz
+  # --------------------------------------------------------------------------
   build-amd64-cross:
     name: Cross Build on AMD64
     runs-on: ubuntu-latest
@@ -24,14 +37,17 @@ jobs:
       BUILDER_IMAGE: "ghcr.io/lorenzobiosa/ubi9-toolchain-builder:latest"
 
     steps:
+      # Checkout repository at the requested ref
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
+      # Minimal dependency to parse JSON pins from versions file
       - name: Install jq for JSON parsing
         run: |
           sudo apt-get update -y || true
           sudo apt-get install -y jq || true
 
+      # Resolve toolchain pins from build/config/tool-versions.json
       - name: Load tool pins from JSON
         id: pins
         run: |
@@ -49,6 +65,7 @@ jobs:
           printf 'fulcio=%s\n' "${FULCIO}"  >> "$GITHUB_OUTPUT"
           printf 'go=%s\n'      "${GO_VER}"   >> "$GITHUB_OUTPUT"
 
+      # Prepare output folders and restore caches (Go build, modules, DNF, ccache)
       - name: Prepare output dirs and caches
         run: |
           set -euo pipefail
@@ -63,12 +80,14 @@ jobs:
             chmod -R u+rwX,go+rwX "$d" || true
           done
 
+      # Restore Go build cache
       - name: Restore Go build cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: .cache/go-build-amd64
           key: go-build-amd64-${{ steps.pins.outputs.go }}
 
+      # Restore Go modules cache
       - name: Restore Go modules cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
@@ -77,6 +96,7 @@ jobs:
           restore-keys: |
             go-mod-amd64-
 
+      # Restore DNF cache (download-only; actual cache is used inside container)
       - name: Restore DNF cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
@@ -85,6 +105,7 @@ jobs:
           restore-keys: |
             dnf-cache-amd64-ubi9-
 
+      # Restore compiler cache (ccache)
       - name: Restore ccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
@@ -93,6 +114,7 @@ jobs:
           restore-keys: |
             ccache-amd64-ubi9-
 
+      # Cross build ARM64 using the builder image (Clang/LLD + sysroot)
       - name: Cross Build Toolchain (arm64)
         env:
           KUBECTL_VERSION: ${{ steps.pins.outputs.kubectl }}
@@ -116,7 +138,7 @@ jobs:
             -v "$PWD/.cache/ccache-amd64:/root/.ccache" \
             ${{ env.BUILDER_IMAGE }} \
             bash -lc '
-              # ---------- ARM64 (CGO con Clang+LLD + sysroot) ----------
+              # ---------- ARM64 (CGO with Clang+LLD + sysroot) ----------
               export GOOS=linux
               export GOARCH=arm64
               export CGO_ENABLED=1
@@ -130,6 +152,7 @@ jobs:
               bash /build/build-tools.sh linux arm64 "${GO_VERSION}"
             '
 
+      # Native build AMD64 using GCC (oc: CGO=1; others: pure Go)
       - name: Native Build Toolchain (amd64)
         env:
           KUBECTL_VERSION: ${{ steps.pins.outputs.kubectl }}
@@ -153,7 +176,7 @@ jobs:
             -v "$PWD/.cache/ccache-amd64:/root/.ccache" \
             ${{ env.BUILDER_IMAGE }} \
             bash -lc '
-              # ---------- AMD64 (CGO per oc, pure-Go per il resto) ----------
+              # ---------- AMD64 (CGO for oc; pure Go for others) ----------
               export GOOS=linux
               export GOARCH=amd64
               export CGO_ENABLED=1
@@ -162,6 +185,7 @@ jobs:
               bash /build/build-tools.sh linux amd64 "${GO_VERSION}"
             '
 
+      # Validate artifact presence and visibility
       - name: Verify artifacts exist
         run: |
           set -euo pipefail
@@ -171,6 +195,7 @@ jobs:
             ls -lh "$ART"
           done
 
+      # Upload final toolchain artifacts (for signing/release and nightly bake)
       - name: Upload build artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -182,6 +207,11 @@ jobs:
           if-no-files-found: error
           compression-level: 6
 
+  # --------------------------------------------------------------------------
+  # Sign & Release:
+  # - Compute release tag, sign artifacts (Cosign + GPG), compose release body,
+  #   and publish GitHub Release (draft → latest)
+  # --------------------------------------------------------------------------
   sign-and-release:
     name: Sign, Verify & Release
     runs-on: ubuntu-latest
@@ -197,21 +227,25 @@ jobs:
       base64_subjects: ${{ steps.subjects.outputs.subjects }}
 
     steps:
+      # Checkout repository to compose release body and manage tags
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
+      # Tag format: toolchain-YYYY-MM-DD-HHMMSS (UTC)
       - name: Compute release tag
         id: tag
         run: |
           TAG="toolchain-$(date -u +'%Y-%m-%d-%H%M%S')"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      # Retrieve previously uploaded artifacts
       - name: Download artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: tools-linux
           path: out
 
+      # Install Cosign (deterministic version)
       - name: Install Cosign
         run: |
           set -euo pipefail
@@ -220,12 +254,14 @@ jobs:
           chmod +x /usr/local/bin/cosign
           cosign version
 
+      # Install Syft (SBOM generator)
       - name: Install Syft
         run: |
           set -euo pipefail
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
           syft version
 
+      # Import GPG key for artifact signing
       - name: Setup GPG
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -235,6 +271,7 @@ jobs:
           echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
           gpg --list-keys
 
+      # Sign and verify artifacts (Cosign + GPG)
       - name: Sign & Verify
         env:
           COSIGN_YES: "true"
@@ -250,6 +287,7 @@ jobs:
             --out-dir ./out \
             --tag "${{ steps.tag.outputs.tag }}"
 
+      # Prepare base64 subjects (SHA256 + filenames) for SLSA generator
       - name: Generate base64-encoded subjects (SHA256 + filenames)
         id: subjects
         run: |
@@ -258,6 +296,7 @@ jobs:
           sha256sum tools-linux-amd64.tar.gz tools-linux-arm64.tar.gz | base64 -w0 > subjects.txt
           echo "subjects=$(cat subjects.txt)" >> "$GITHUB_OUTPUT"
 
+      # Compose release body with pins, checksums, and diff from previous tag
       - name: Compose release body (pins + diff)
         run: |
           set -euo pipefail
@@ -290,18 +329,19 @@ jobs:
             echo "Marked as **Latest**. GitHub Auto-Generated Release Notes enabled."
           } > out/RELEASE_BODY.md
 
+      # Display computed tag for traceability in logs
       - name: Debug release tag
         run: echo "Computed tag = '${{ steps.tag.outputs.tag }}'"
 
-      # --- Create release as draft (consente upload asset con immutabilità) ---
+      # Create the GitHub Release as draft (immutable assets uploaded safely)
       - name: Create GitHub Release (draft)
         uses: softprops/action-gh-release@5be0e66d93ac7ed76da52eca8bb058f665c3a5fe
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
-          draft: true # ⬅️ cambia a true
+          draft: true
           prerelease: false
-          make_latest: false # ⬅️ pubblichiamo nello step successivo
+          make_latest: false
           generate_release_notes: true
           body_path: out/RELEASE_BODY.md
           files: |
@@ -315,7 +355,7 @@ jobs:
             out/tools-linux-arm64.tar.gz.asc
             out/SHA256SUMS.asc
 
-      # --- Pubblica la release (diventa immutabile dopo aver allegato gli asset) ---
+      # Publish the release (switch draft → latest) after assets are attached
       - name: Publish release (make latest)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -326,7 +366,11 @@ jobs:
             --latest \
             --notes-file out/RELEASE_BODY.md
 
-  # --------------------- SLSA3 provenance (Generic Generator) ------------------
+  # --------------------------------------------------------------------------
+  # SLSA3 provenance (Generic Generator):
+  #   - Generates provenance attestation for released artifacts
+  #   - Uploads attestation as release assets
+  # --------------------------------------------------------------------------
   slsa-provenance:
     name: Generate SLSA3 provenance (Generic)
     needs: [build-amd64-cross, sign-and-release]
@@ -339,25 +383,65 @@ jobs:
       base64-subjects: "${{ needs.sign-and-release.outputs.base64_subjects }}"
       upload-assets: true
 
-  # --------- Nightly: bake prebuilt binaries into builder (optional) -----------
+  # --------------------------------------------------------------------------
+  # Nightly: bake prebuilt binaries into builder image (multi-arch)
+  # - Uses Buildx docker-container driver (required for GHA cache)
+  # - Pushes :latest and immutable :<sha> tags to GHCR
+  # - Verifies tarball SHA256 within Dockerfile.prebuilt
+  # --------------------------------------------------------------------------
   bake-prebuilt:
-    name: Bake prebuilt binaries into GHCR builder (nightly)
+    name: Bake prebuilt binaries into GHCR builder
     runs-on: ubuntu-latest
     needs: build-amd64-cross
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       packages: write
+    env:
+      IMAGE_NAME: ghcr.io/lorenzobiosa/ubi9-toolchain-builder
+
     steps:
+      # Checkout repository to read Dockerfile.prebuilt and context
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
+      # Download toolchain artifacts produced by build-amd64-cross
       - name: Download artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: tools-linux
           path: out
 
+      # Compute SHA256 of tarballs (used by Dockerfile.prebuilt for verification)
+      - name: Compute tarball SHA256
+        id: shas
+        run: |
+          set -euo pipefail
+          AMD64_SHA=$(sha256sum out/tools-linux-amd64.tar.gz | awk '{print $1}')
+          ARM64_SHA=$(sha256sum out/tools-linux-arm64.tar.gz | awk '{print $1}')
+          echo "amd64_sha=${AMD64_SHA}" >> "$GITHUB_OUTPUT"
+          echo "arm64_sha=${ARM64_SHA}" >> "$GITHUB_OUTPUT"
+
+      # Prepare Buildx with docker-container driver (enables GHA cache export)
+      - name: Set up Buildx (docker-container driver)
+        id: buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+        with:
+          driver: docker-container
+
+      # (Optional) expose builder name to later steps via environment
+      - name: Select Buildx builder
+        run: echo "BUILDX_BUILDER=${{ steps.buildx.outputs.name }}" >> "$GITHUB_ENV"
+
+      # Authenticate to GHCR to push multi-arch images
+      - name: Login to GHCR
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      # Build & push prebuilt stash image; cache via GHA; verify SHA inside build
       - name: Build & Push builder with prebuilt stash
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
         with:
@@ -365,6 +449,26 @@ jobs:
           file: build/Dockerfile.prebuilt
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/lorenzobiosa/ubi9-toolchain-builder:latest
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          builder: ${{ steps.buildx.outputs.name }}
+          build-args: |
+            BASE_IMAGE=ghcr.io/lorenzobiosa/ubi9-toolchain-builder:latest
+            AMD64_TARBALL=out/tools-linux-amd64.tar.gz
+            ARM64_TARBALL=out/tools-linux-arm64.tar.gz
+            AMD64_SHA256=${{ steps.shas.outputs.amd64_sha }}
+            ARM64_SHA256=${{ steps.shas.outputs.arm64_sha }}
+            IMAGE_TITLE=UBI9 Toolchain Builder (prebuilt stash)
+            IMAGE_DESCRIPTION=Builder with baked toolchain tarballs
+            IMAGE_VENDOR=Lorenzo Biosa
+            IMAGE_LICENSES=MIT
+            IMAGE_VERSION=nightly
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.pushed_at || '' }}
+
+      # Post-push audit: ensure manifest list contains linux/amd64 and linux/arm64 only
+      - name: Inspect multi-arch manifest
+        run: docker buildx imagetools inspect "${{ env.IMAGE_NAME }}:latest"
