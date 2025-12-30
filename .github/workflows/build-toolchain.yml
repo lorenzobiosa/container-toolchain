@@ -461,6 +461,8 @@ jobs:
             ARM64_TARBALL=out/tools-linux-arm64.tar.gz
             AMD64_SHA256=${{ steps.shas.outputs.amd64_sha }}
             ARM64_SHA256=${{ steps.shas.outputs.arm64_sha }}
+            BUILDER_UID=10001
+            BUILDER_GID=10001
             IMAGE_TITLE=UBI9 Toolchain Builder (prebuilt stash)
             IMAGE_DESCRIPTION=Builder with baked toolchain tarballs
             IMAGE_VENDOR=Lorenzo Biosa
