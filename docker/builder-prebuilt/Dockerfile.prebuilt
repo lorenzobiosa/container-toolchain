@@ -1,0 +1,133 @@
+# ------------------------------------------------------------------------------
+# UBI Toolchain Builder (Prebuilt Stash) - Enterprise Dockerfile
+# ------------------------------------------------------------------------------
+# Description : Parametric image that bakes precompiled multi-arch toolchain
+#               tarballs (amd64/arm64) and an optional ARM64 sysroot tarball
+#               into the UBI-based builder. Uses strict SHA256 verification.
+# Author      : Lorenzo Biosa
+# Organization: Biosa Labs
+# Contact     : lorenzo@biosa-labs.com
+# License     : Configurable via IMAGE_LICENSES label
+# Notes       : Requires Docker BuildKit to use ARG in FROM and multi-arch builds.
+# ------------------------------------------------------------------------------
+
+# --- Base image (MUST be passed; typically your builder image pinned by digest)
+ARG BASE_IMAGE
+FROM --platform=$BUILDPLATFORM ${BASE_IMAGE}
+
+# --- Mandatory metadata and builder configuration (all must be provided)
+ARG IMAGE_TITLE
+ARG IMAGE_DESCRIPTION
+ARG IMAGE_VENDOR
+ARG IMAGE_LICENSES
+ARG IMAGE_SOURCE_URL
+ARG VCS_REF
+ARG BUILD_DATE
+
+# --- Runtime/banner settings (parametric)
+ARG WELCOME_ENABLE
+ARG PROMPT_ENABLE_COLORS
+
+# --- Non-root user config (parametric)
+ARG BUILDER_UID
+ARG BUILDER_GID
+
+# --- Artifact inputs (parametric: tarballs + SHA256)
+# Toolchain tarballs produced upstream (multi-arch)
+ARG AMD64_TARBALL         # e.g., out/tools-linux-amd64.tar.gz
+ARG ARM64_TARBALL         # e.g., out/tools-linux-arm64.tar.gz
+ARG AMD64_SHA256
+ARG ARM64_SHA256
+
+# Optional ARM64 sysroot tarball (passed via CI), with SHA256 integrity
+ARG ARM64_SYSROOT         # e.g., out/arm64-sysroot.tar.gz (optional)
+ARG ARM64_SYSROOT_SHA256
+
+# --- OCI-compliant labels (filled from args; no static literals)
+LABEL org.opencontainers.image.title="${IMAGE_TITLE}" \
+    org.opencontainers.image.description="${IMAGE_DESCRIPTION}" \
+    org.opencontainers.image.vendor="${IMAGE_VENDOR}" \
+    org.opencontainers.image.version="${VCS_REF}" \
+    org.opencontainers.image.revision="${VCS_REF}" \
+    org.opencontainers.image.licenses="${IMAGE_LICENSES}" \
+    org.opencontainers.image.created="${BUILD_DATE}" \
+    org.opencontainers.image.source="${IMAGE_SOURCE_URL}"
+
+# --- Export env from args (consumers can override at runtime)
+ENV LC_ALL=C.UTF-8 \
+    LANG=C.UTF-8 \
+    PATH=/usr/local/bin:/usr/bin:/bin \
+    WELCOME_ENABLE=${WELCOME_ENABLE} \
+    PROMPT_ENABLE_COLORS=${PROMPT_ENABLE_COLORS} \
+    PKG_CONFIG_SYSROOT_DIR=/opt/sysroot/arm64 \
+    PKG_CONFIG_LIBDIR=/opt/sysroot/arm64/usr/lib64/pkgconfig:/opt/sysroot/arm64/usr/lib/pkgconfig \
+    PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/share/pkgconfig
+
+# --- Defensive validation: fail early if required args are missing
+RUN set -eux; \
+    for v in \
+    IMAGE_TITLE IMAGE_DESCRIPTION IMAGE_VENDOR IMAGE_LICENSES IMAGE_SOURCE_URL \
+    VCS_REF BUILD_DATE WELCOME_ENABLE PROMPT_ENABLE_COLORS BUILDER_UID BUILDER_GID \
+    AMD64_TARBALL ARM64_TARBALL AMD64_SHA256 ARM64_SHA256; \
+    do \
+    eval "x=\${$v}"; \
+    [ -n "$x" ] || { echo "ERROR: missing required argument: $v"; exit 2; }; \
+    done; \
+    # ARM64_SYSROOT is optional, but if provided, the SHA must be provided
+    if [ -n "${ARM64_SYSROOT:-}" ] && [ -z "${ARM64_SYSROOT_SHA256:-}" ]; then \
+    echo "ERROR: ARM64_SYSROOT provided but ARM64_SYSROOT_SHA256 missing"; exit 2; \
+    fi
+
+# --- Minimal tools to unpack tarballs and ensure reproducibility
+RUN set -eux; \
+    microdnf install -y --setopt=tsflags=nodocs \
+    bash coreutils tar gzip xz unzip ca-certificates tzdata \
+    && microdnf clean all \
+    && rm -rf /var/cache/dnf/* /var/tmp/*
+
+# --- Copy banner/prompt scripts (enabled via env toggles)
+COPY configs/prompt/00-welcome.sh /etc/profile.d/00-welcome.sh
+COPY configs/prompt/10-ps1.sh     /etc/profile.d/10-ps1.sh
+RUN chmod +x /etc/profile.d/00-welcome.sh /etc/profile.d/10-ps1.sh
+
+# --- Non-root user (UID/GID provided via args)
+RUN set -eux; \
+    getent group "${BUILDER_GID}" >/dev/null || groupadd -g "${BUILDER_GID}" builder; \
+    id -u "${BUILDER_UID}"      >/dev/null 2>&1 || useradd -m -u "${BUILDER_UID}" -g "${BUILDER_GID}" -s /bin/bash builder; \
+    mkdir -p /work /opt/ccache; \
+    chown -R builder:builder /work /opt/ccache
+
+# --- Bake toolchain tarballs (amd64/arm64) with SHA256 integrity checks
+# These tarballs should contain binaries + supporting files for each arch.
+# The layout inside the tarballs is project-defined (e.g., /opt/tools/linux-amd64).
+COPY ${AMD64_TARBALL} /tmp/tools-linux-amd64.tar.gz
+COPY ${ARM64_TARBALL} /tmp/tools-linux-arm64.tar.gz
+RUN set -eux; \
+    echo "${AMD64_SHA256}  /tmp/tools-linux-amd64.tar.gz" | sha256sum -c -; \
+    echo "${ARM64_SHA256}  /tmp/tools-linux-arm64.tar.gz" | sha256sum -c -; \
+    mkdir -p /opt/tools/linux-amd64 /opt/tools/linux-arm64; \
+    tar -C /opt/tools/linux-amd64 -xzf /tmp/tools-linux-amd64.tar.gz; \
+    tar -C /opt/tools/linux-arm64 -xzf /tmp/tools-linux-arm64.tar.gz; \
+    rm -f /tmp/tools-linux-amd64.tar.gz /tmp/tools-linux-arm64.tar.gz; \
+    # Make tools runnable by non-root user
+    chown -R builder:builder /opt/tools
+
+# --- Optional: Bake ARM64 sysroot tarball (if provided), with SHA256 verification
+# Sysroot should be minimal and read-only (headers/libs/startfiles required for cross-compilation).
+# It is NOT executed during build; we just unpack and use via PKG_CONFIG_* and compiler --sysroot.
+# If ARM64_SYSROOT is not provided, this block becomes a no-op.
+# Using a single RUN for conditional logic keeps layers deterministic.
+RUN set -eux; \
+    if [ -n "${ARM64_SYSROOT:-}" ]; then \
+    cp "${ARM64_SYSROOT}" /tmp/arm64-sysroot.tar.gz; \
+    echo "${ARM64_SYSROOT_SHA256}  /tmp/arm64-sysroot.tar.gz" | sha256sum -c -; \
+    mkdir -p /opt/sysroot/arm64; \
+    tar -C /opt/sysroot/arm64 -xzf /tmp/arm64-sysroot.tar.gz; \
+    rm -f /tmp/arm64-sysroot.tar.gz; \
+    chown -R builder:builder /opt/sysroot; \
+    fi
+
+# --- Workspace & shell
+WORKDIR /work
+SHELL ["/bin/bash", "-lc"]
+CMD [ "bash", "-lc", "echo 'Prebuilt builder ready (parametric)'; exec bash" ]
