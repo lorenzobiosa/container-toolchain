@@ -7,7 +7,7 @@ on:
     branches: ["master"]
     paths:
       - "build/Dockerfile"
-      - "build/config/prompt/**"
+      - "config/prompt/**"
       - ".github/workflows/build-builder-image.yml"
 
 jobs:
