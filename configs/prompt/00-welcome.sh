@@ -43,21 +43,11 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Banner content (override via environment if needed)
-# ------------------------------------------------------------------------------
-
-IMAGE_TITLE="${IMAGE_TITLE:-UBI9 Container Toolchain Builder}"
-IMAGE_DESCRIPTION="${IMAGE_DESCRIPTION:-UBI9-based builder (amd64 host, arm64 cross sysroot)}"
-IMAGE_VENDOR="${IMAGE_VENDOR:-Lorenzo Biosa}"
-AUTHOR_EMAIL="${AUTHOR_EMAIL:-lorenzo@biosa-labs.com}"
-COMPANY_NAME="${COMPANY_NAME:-Biosa Labs}"
-
-# ------------------------------------------------------------------------------
 # Render welcome banner
 # ------------------------------------------------------------------------------
 printf '%b============================================================%b\n' "$GREEN" "$RESET"
 printf '%b%b%s%b\n' "$BOLD" "$WHITE" "$IMAGE_TITLE" "$RESET"
 printf '%b%b%s%b\n' "$BOLD" "$GRAY" "$IMAGE_DESCRIPTION" "$RESET"
 printf '%bAuthor:%b %s <%s> © %s%b\n' \
-    "$BOLD" "$WHITE" "$IMAGE_VENDOR" "$AUTHOR_EMAIL" "$COMPANY_NAME" "$RESET"
+    "$BOLD" "$WHITE" "$IMAGE_AUTHOR" "$AUTHOR_EMAIL" "$IMAGE_VENDOR" "$RESET"
 printf '%b============================================================%b\n' "$GREEN" "$RESET"
