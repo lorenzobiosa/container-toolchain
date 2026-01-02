@@ -19,7 +19,7 @@ jobs:
       packages: write  # needed to push to GHCR
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: ghcr.io/lorenzobiosa/ubi9-toolchain-builder
+      IMAGE_NAME: ghcr.io/lorenzobiosa/toolchain-builder
       BASE_IMAGE: registry.access.redhat.com/ubi10/ubi:latest
       IMAGE_TITLE: UBI Container Toolchain Builder
       IMAGE_DESCRIPTION: Deterministic builder (amd64/arm64 toolchains) with parametric sysroots
@@ -57,7 +57,7 @@ jobs:
           set -euo pipefail
           docker build \
             --file docker/builder/Dockerfile \
-            --tag "${{ env.IMAGE_NAME }}:latest" \
+            --tag "${{ env.IMAGE_NAME }}:ubi10" \
             --build-arg BASE_IMAGE="${{ env.BASE_IMAGE }}" \
             --build-arg VCS_REF="${{ steps.meta.outputs.revision }}" \
             --build-arg BUILD_DATE="${{ steps.meta.outputs.created }}" \
@@ -67,4 +67,4 @@ jobs:
       - name: Docker Push
         run: |
           set -euo pipefail
-          docker push "${{ env.IMAGE_NAME }}:latest"
+          docker push "${{ env.IMAGE_NAME }}:ubi10"
