@@ -6,7 +6,7 @@ on:
   push:
     branches: ["master"]
     paths:
-      - "build/Dockerfile"
+      - "docker/builder/Dockerfile"
       - "configs/prompt/**"
       - ".github/workflows/build-builder-image.yml"
 
@@ -56,7 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           docker build \
-            --file build/Dockerfile \
+            --file docker/builder/Dockerfile \
             --tag "${{ env.IMAGE_NAME }}:latest" \
             --build-arg BASE_IMAGE="${{ env.BASE_IMAGE }}" \
             --build-arg VCS_REF="${{ steps.meta.outputs.revision }}" \
