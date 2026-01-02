@@ -1,3 +1,4 @@
+
 # .github/workflows/build-builder-image.yml
 name: Build & Release Toolchain Builder
 
@@ -7,7 +8,7 @@ on:
     branches: ["master"]
     paths:
       - "build/Dockerfile"
-      - "config/prompt/**"
+      - "build/config/prompt/**"
       - ".github/workflows/build-builder-image.yml"
 
 jobs:
@@ -16,25 +17,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # needed to push to GHCR
+      packages: write  # needed to push to GHCR
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ghcr.io/lorenzobiosa/ubi9-toolchain-builder
-      GO_VERSION: "1.25.5"
-      ENABLE_SUDO: "1"
-      PROMPT_ENABLE_COLORS: "1"
-      WELCOME_ENABLE: "1"
-      IMAGE_TITLE: "UBI9 Container Toolchain Builder"
-      IMAGE_DESCRIPTION: "UBI9-based builder with Go toolchain and ARM64 sysroot for cross-compilation of tools"
-      IMAGE_VENDOR: "Lorenzo Biosa"
-      IMAGE_LICENSES: "MIT"
-      BASE_IMAGE: "registry.access.redhat.com/ubi9/ubi:latest"
+      BASE_IMAGE: registry.access.redhat.com/ubi10/ubi:latest
+      IMAGE_TITLE: UBI Container Toolchain Builder
+      IMAGE_DESCRIPTION: Deterministic builder (amd64/arm64 toolchains) with parametric sysroots
+      IMAGE_VENDOR: Biosa Labs
+      IMAGE_LICENSES: MIT
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
       - name: Login to GHCR
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef
@@ -54,31 +49,23 @@ jobs:
       - name: Validate prompt files present
         run: |
           set -euo pipefail
-          test -f build/config/prompt/00-welcome.sh || { echo "::error ::Missing build/config/prompt/00-welcome.sh"; exit 1; }
-          test -f build/config/prompt/10-ps1.sh     || { echo "::error ::Missing build/config/prompt/10-ps1.sh"; exit 1; }
+          test -f config/prompt/00-welcome.sh || { echo "::error ::Missing config/prompt/00-welcome.sh"; exit 1; }
+          test -f config/prompt/10-ps1.sh     || { echo "::error ::Missing config/prompt/10-ps1.sh"; exit 1; }
 
-      - name: Build & Push # multi-arch
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
-        with:
-          context: .
-          file: build/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          # Pass Dockerfile build args so banner/prompt & sudo are parametrized at build time
-          build-args: |
-            BASE_IMAGE=${{ env.BASE_IMAGE }}
-            GO_VERSION=${{ env.GO_VERSION }}
-            ENABLE_SUDO=${{ env.ENABLE_SUDO }}
-            PROMPT_ENABLE_COLORS=${{ env.PROMPT_ENABLE_COLORS }}
-            WELCOME_ENABLE=${{ env.WELCOME_ENABLE }}
-            IMAGE_TITLE=${{ env.IMAGE_TITLE }}
-            IMAGE_DESCRIPTION=${{ env.IMAGE_DESCRIPTION }}
-            IMAGE_VENDOR=${{ env.IMAGE_VENDOR }}
-            IMAGE_LICENSES=${{ env.IMAGE_LICENSES }}
-            VCS_REF=${{ steps.meta.outputs.revision }}
-            BUILD_DATE=${{ steps.meta.outputs.created }}
-            IMAGE_VERSION=${{ steps.meta.outputs.version }}
+      # Build single-arch image (amd64 runner), then push
+      - name: Docker Build
+        run: |
+          set -euo pipefail
+          docker build \
+            --file build/Dockerfile \
+            --tag "${{ env.IMAGE_NAME }}:latest" \
+            --build-arg BASE_IMAGE="${{ env.BASE_IMAGE }}" \
+            --build-arg VCS_REF="${{ steps.meta.outputs.revision }}" \
+            --build-arg BUILD_DATE="${{ steps.meta.outputs.created }}" \
+            --build-arg IMAGE_VERSION="${{ steps.meta.outputs.version }}" \
+            .
+
+      - name: Docker Push
+        run: |
+          set -euo pipefail
+          docker push "${{ env.IMAGE_NAME }}:latest"
