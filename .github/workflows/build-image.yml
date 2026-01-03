@@ -11,12 +11,12 @@ on:
 
 jobs:
   build-push:
-    name: Build & Push
+    name: Build & Push (UBI8/UBI9/UBI10) + Cache, SBOM, Cosign
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write       # push to GHCR
-      id-token: write       # Cosign keyless
+      id-token: write       # required for Cosign keyless OIDC
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ghcr.io/lorenzobiosa/toolchain-builder
@@ -64,7 +64,8 @@ jobs:
           test -f configs/prompt/00-welcome.sh || { echo "::error ::Missing configs/prompt/00-welcome.sh"; exit 1; }
           test -f configs/prompt/10-ps1.sh     || { echo "::error ::Missing configs/prompt/10-ps1.sh"; exit 1; }
 
-      - name: Build & Push (${{ matrix.tag }})
+      # Build & Push with Buildx (cache GHA, SBOM, provenance)
+      - name: Build & Push (${{ matrix.tag }}) with cache/SBOM/provenance
         id: build
         uses: docker/build-push-action@v5
         with:
@@ -83,103 +84,14 @@ jobs:
             IMAGE_VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: mode=max
-          sbom: true
-
-# .github/workflows/build-builder-image.yml
-name: Build & Release Toolchain Builder
-
-on:
-  workflow_dispatch:
-  push:
-    branches: ["master"]
-    paths:
-      - "docker/builder/Dockerfile"
-      - "configs/prompt/**"
-      - ".github/workflows/build-builder-image.yml"
-
-jobs:
-  build-push:
-    name: Build & Push
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write       # push to GHCR
-      id-token: write       # Cosign keyless
-    env:
-      REGISTRY: ghcr.io
-      IMAGE_NAME: ghcr.io/lorenzobiosa/toolchain-builder
-      IMAGE_TITLE: UBI Container Toolchain Builder
-      IMAGE_DESCRIPTION: Deterministic builder (amd64/arm64 toolchains) with parametric sysroots
-      IMAGE_VENDOR: Biosa Labs
-      IMAGE_LICENSES: MIT
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - base: "registry.access.redhat.com/ubi8/ubi:latest"
-            tag: "ubi8"
-          - base: "registry.access.redhat.com/ubi9/ubi:latest"
-            tag: "ubi9"
-          - base: "registry.access.redhat.com/ubi10/ubi:latest"
-            tag: "ubi10"
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-
-      - name: Set up Buildx (BuildKit)
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute build metadata
-        id: meta
-        run: |
-          set -euo pipefail
-          echo "revision=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-
-      - name: Validate prompt files present
-        run: |
-          set -euo pipefail
-          test -f configs/prompt/00-welcome.sh || { echo "::error ::Missing configs/prompt/00-welcome.sh"; exit 1; }
-          test -f configs/prompt/10-ps1.sh     || { echo "::error ::Missing configs/prompt/10-ps1.sh"; exit 1; }
-
-      - name: Build & Push (${{ matrix.tag }})
-        id: build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/builder/Dockerfile
-          push: true
-          tags: ${{ env.IMAGE_NAME }}:${{ matrix.tag }}
-          build-args: |
-            BASE_IMAGE=${{ matrix.base }}
-            IMAGE_TITLE=${{ env.IMAGE_TITLE }}
-            IMAGE_DESCRIPTION=${{ env.IMAGE_DESCRIPTION }}
-            IMAGE_VENDOR=${{ env.IMAGE_VENDOR }}
-            IMAGE_LICENSES=${{ env.IMAGE_LICENSES }}
-            VCS_REF=${{ steps.meta.outputs.revision }}
-            BUILD_DATE=${{ steps.meta.outputs.created }}
-            IMAGE_VERSION=${{ steps.meta.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: mode=max
-          sbom: true
+          provenance: mode=max     # in-toto provenance attestation
+          sbom: true               # SBOM attestation (SPDX) pushed to registry
 
       - name: Install Cosign
         if: ${{ success() }}
         uses: sigstore/cosign-installer@v3.6.0
 
-      - name: Cosign sign (keyless, default) ${{ matrix.tag }}
+      - name: Cosign sign (keyless by default) ${{ matrix.tag }}
         if: ${{ success() }}
         env:
           COSIGN_YES: "true"
@@ -187,25 +99,23 @@ jobs:
           set -euo pipefail
           IMAGE="${{ env.IMAGE_NAME }}:${{ matrix.tag }}"
           DIGEST="${{ steps.build.outputs.digest }}"
+          # Sign by digest (immutable); keyless is default with id-token: write
           cosign sign "${IMAGE}@${DIGEST}"
 
-      - name: Cosign verify (keyless, default) ${{ matrix.tag }}
+      - name: Cosign verify (keyless, strict identity) ${{ matrix.tag }}
         if: ${{ success() }}
         run: |
           set -euo pipefail
           IMAGE="${{ env.IMAGE_NAME }}:${{ matrix.tag }}"
           DIGEST="${{ steps.build.outputs.digest }}"
-          cosign verify "${IMAGE}@${DIGEST}"
+          # Build strict identity dynamically from context
+          IDENTITY="${{ github.server_url }}/${{ github.repository }}/.github/workflows/${{ github.workflow }}@${{ github.ref }}"
+          cosign verify \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity "${IDENTITY}" \
+            "${IMAGE}@${DIGEST}"
 
-      - name: Generate SBOM (SPDX JSON) with Syft
-        if: ${{ success() }}
-        uses: anchore/sbom-action@v0
-        with:
-          image: ${{ env.IMAGE_NAME }}:${{ matrix.tag }}
-          format: spdx-json
-          output: sbom-${{ matrix.tag }}.spdx.json
-          upload-artifact: true
-
+      # Optionally export a SBOM file (in addition to the OCI SBOM attestation)
       - name: Generate SBOM (SPDX JSON) with Syft
         if: ${{ success() }}
         uses: anchore/sbom-action@v0
