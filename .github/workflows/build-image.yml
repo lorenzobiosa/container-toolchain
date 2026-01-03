@@ -14,9 +14,9 @@ jobs:
     name: Build & Push (UBI8/UBI9/UBI10) + Cache, SBOM, Cosign
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write       # push to GHCR
-      id-token: write       # required for Cosign keyless OIDC
+      contents: write # <-- aggiornato: serve write per upload artifact SBOM
+      packages: write # push to GHCR
+      id-token: write # required for Cosign keyless OIDC
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ghcr.io/lorenzobiosa/toolchain-builder
@@ -24,6 +24,7 @@ jobs:
       IMAGE_DESCRIPTION: Deterministic builder (amd64/arm64 toolchains) with parametric sysroots
       IMAGE_VENDOR: Biosa Labs
       IMAGE_LICENSES: MIT
+      WORKFLOW_FILE: .github/workflows/build-image.yml # <-- esplicita il file del workflow
 
     strategy:
       fail-fast: false
@@ -84,8 +85,8 @@ jobs:
             IMAGE_VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: mode=max     # in-toto provenance attestation
-          sbom: true               # SBOM attestation (SPDX) pushed to registry
+          provenance: mode=max # in-toto provenance attestation
+          sbom: true # SBOM attestation (SPDX) pushed to registry
 
       - name: Install Cosign
         if: ${{ success() }}
@@ -108,19 +109,20 @@ jobs:
           set -euo pipefail
           IMAGE="${{ env.IMAGE_NAME }}:${{ matrix.tag }}"
           DIGEST="${{ steps.build.outputs.digest }}"
-          # Build strict identity dynamically from context
-          IDENTITY="${{ github.server_url }}/${{ github.repository }}/.github/workflows/${{ github.workflow }}@${{ github.ref }}"
+          # Costruisci l'identità esatta: <repo>/.github/workflows/<file>@<ref>
+          IDENTITY="${{ github.server_url }}/${{ github.repository }}/${{ env.WORKFLOW_FILE }}@${{ github.ref }}"
           cosign verify \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             --certificate-identity "${IDENTITY}" \
             "${IMAGE}@${DIGEST}"
 
-      # Optionally export a SBOM file (in addition to the OCI SBOM attestation)
+      # Export SBOM file (oltre all'attestazione OCI)
       - name: Generate SBOM (SPDX JSON) with Syft
         if: ${{ success() }}
         uses: anchore/sbom-action@v0
         with:
           image: ${{ env.IMAGE_NAME }}:${{ matrix.tag }}
           format: spdx-json
-          output: sbom-${{ matrix.tag }}.spdx.json
+          output-file: sbom-${{ matrix.tag }}.spdx.json # <-- corretto
+          artifact-name: sbom-${{ matrix.tag }}.spdx.json # unico per ogni tag
           upload-artifact: true
