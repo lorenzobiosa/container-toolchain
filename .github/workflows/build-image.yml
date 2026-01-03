@@ -65,7 +65,7 @@ jobs:
           test -f configs/prompt/00-welcome.sh || { echo "::error ::Missing configs/prompt/00-welcome.sh"; exit 1; }
           test -f configs/prompt/10-ps1.sh     || { echo "::error ::Missing configs/prompt/10-ps1.sh"; exit 1; }
 
-      - name: Build & Push (${{ matrix.tag }}) with cache/SBOM/provenance
+      - name: Build & Push (${{ matrix.tag }})
         id: build
         uses: docker/build-push-action@v5
         with:
@@ -91,23 +91,23 @@ jobs:
         if: ${{ success() }}
         uses: sigstore/cosign-installer@v3.6.0
 
-      - name: Cosign sign (keyless) ${{ matrix.tag }}
+      - name: Cosign sign (keyless, default) ${{ matrix.tag }}
         if: ${{ success() }}
         env:
-          COSIGN_EXPERIMENTAL: "1"
+          COSIGN_YES: "true"
         run: |
           set -euo pipefail
           IMAGE="${{ env.IMAGE_NAME }}:${{ matrix.tag }}"
           DIGEST="${{ steps.build.outputs.digest }}"
-          cosign sign --yes --keyless "${IMAGE}@${DIGEST}"
+          cosign sign "${IMAGE}@${DIGEST}"
 
-      - name: Cosign verify (keyless) ${{ matrix.tag }}
+      - name: Cosign verify (keyless, default) ${{ matrix.tag }}
         if: ${{ success() }}
         run: |
           set -euo pipefail
           IMAGE="${{ env.IMAGE_NAME }}:${{ matrix.tag }}"
           DIGEST="${{ steps.build.outputs.digest }}"
-          cosign verify --keyless "${IMAGE}@${DIGEST}"
+          cosign verify "${IMAGE}@${DIGEST}"
 
       - name: Generate SBOM (SPDX JSON) with Syft
         if: ${{ success() }}
