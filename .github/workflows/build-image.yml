@@ -30,8 +30,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - base: "registry.access.redhat.com/ubi8/ubi:latest"
-            tag: "ubi8"
           - base: "registry.access.redhat.com/ubi9/ubi:latest"
             tag: "ubi9"
           - base: "registry.access.redhat.com/ubi10/ubi:latest"

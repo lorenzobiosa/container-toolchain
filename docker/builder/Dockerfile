@@ -134,8 +134,10 @@ RUN set -Eeuo pipefail; \
     rpm -Uvh "${EPEL_URL}" >/dev/null; \
     log "Enabling UBI base repositories (ubi.repo) for package operations..."; \
     sed -i 's/enabled = 0/enabled = 1/g' /etc/yum.repos.d/ubi.repo; \
+    sed -i 's/enabled=0/enabled=1/g' /etc/yum.repos.d/ubi.repo; \
     log "Enabling EPEL repositories for supplemental packages..."; \
     sed -i 's/enabled = 0/enabled = 1/g' /etc/yum.repos.d/epel*; \
+    sed -i 's/enabled=0/enabled=1/g' /etc/yum.repos.d/epel*; \
     \
     # --- System Update
     log "Refreshing repository metadata and applying base upgrades..."; \
