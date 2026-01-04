@@ -1,126 +1,128 @@
-name: Build & Release Toolchain Builder
+# ------------------------------------------------------------------------------------
+# Build & Release Toolchain Builder (Enterprise)
+# ------------------------------------------------------------------------------------
+# Description:
+# End-to-end, production-grade CI workflow that:
+#  - Builds and pushes a multi-arch image to GHCR with SLSA provenance and SBOM attestation
+#  - Runs vulnerability scans (Trivy + Grype) and uploads SARIF reports to Code Scanning
+#  - Signs and verifies the image using Cosign (keyless via GitHub OIDC)
+#  - Exports a standalone SBOM (SPDX JSON) as a workflow artifact
+#  - Replicates the verified image to Docker Hub (post-scan gate) via Buildx imagetools
+#  - Supports environment-based promotion with manual approvals (GitHub Environments)
+#
+# Requirements:
+#  - Repository VAR:    DOCKERHUB_USERNAME   (non-sensitive)
+#  - Repository SECRET: DOCKERHUB_TOKEN     (Docker Hub access token)
+#  - Reusable workflows present under .github/workflows/:
+#      build-container.yml, scan-trivy.yml, scan-grype.yml,
+#      sign-verify.yml, sbom-export.yml, replicate-to-dockerhub.yml
+# ------------------------------------------------------------------------------------
+
+name: Build & Release Toolchain Builder (Enterprise)
 
 on:
   workflow_dispatch:
   push:
-    branches: ["master"]
+    branches:
+      - master
     paths:
-      - "docker/builder/Dockerfile"
-      - "configs/prompt/**"
-      - ".github/workflows/build-image.yml"
+      - docker/builder/Dockerfile
+      - configs/prompt/**
+      - .github/workflows/build-image.yml
+
+# Least-privilege permissions needed for this workflow
+permissions:
+  contents: write # artifacts, SBOM uploads
+  packages: write # push to GHCR
+  id-token: write # Cosign keyless (OIDC)
+  security-events: write # SARIF uploads to Code Scanning
+
+# Prevent overlapping runs for the same ref (best practice)
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-push:
-    name: Build & Push (UBI8/UBI9/UBI10) + Cache, SBOM, Cosign
+  # 1) Build & push to GHCR (SLSA provenance + SBOM attestation)
+  build:
+    name: Build & Push (GHCR) + provenance/SBOM attestation
+    uses: ./.github/workflows/build-container.yml
+    with:
+      base: registry.access.redhat.com/ubi9/ubi:latest
+      tag: ubi9
+      image_name: ghcr.io/lorenzobiosa/toolchain-builder
+      title: UBI Container Toolchain Builder
+      description: Deterministic builder (amd64/arm64 toolchains) with parametric sysroots
+      vendor: Biosa Labs
+      licenses: MIT
+
+  # 2) Vulnerability scans (Trivy + Grype) with SARIF uploads (gating)
+  scan_trivy:
+    name: Scan (Trivy) - gate HIGH/CRITICAL + SARIF
+    needs:
+      - build
+    uses: ./.github/workflows/scan-trivy.yml
+    with:
+      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi9
+      fail_on: HIGH,CRITICAL
+      output_sarif: true
+
+  scan_grype:
+    name: Scan (Grype) - gate HIGH + SARIF
+    needs:
+      - build
+    uses: ./.github/workflows/scan-grype.yml
+    with:
+      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi9
+      fail_on: high
+
+  # 3) Cosign: sign & verify (keyless OIDC) strictly bound to the signing workflow path
+  sign:
+    name: Cosign sign & verify (keyless)
+    needs:
+      - scan_trivy
+      - scan_grype
+    uses: ./.github/workflows/sign-verify.yml
+    with:
+      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi9
+      digest: ${{ needs.build.outputs.digest }}
+      workflow_file: .github/workflows/sign-verify.yml
+
+  # 4) SBOM file (SPDX JSON) in addition to registry attestation
+  sbom_file:
+    name: SBOM (SPDX JSON) artifact
+    needs:
+      - sign
+    uses: ./.github/workflows/sbom-export.yml
+    with:
+      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi9
+      artifact_name: sbom-ubi9.spdx.json
+      output_file: sbom-ubi9.spdx.json
+
+  # 5) Replicate the verified image to Docker Hub (post-scan gate) via Buildx imagetools
+  replicate_dockerhub:
+    name: Replicate to Docker Hub (post-scan gate)
+    needs:
+      - sbom_file
+    uses: ./.github/workflows/replicate-to-dockerhub.yml
+    with:
+      ghcr_image: ghcr.io/lorenzobiosa/toolchain-builder
+      dockerhub_image: docker.io/${{ vars.DOCKERHUB_USERNAME }}/toolchain-builder
+      dockerhub_username: ${{ vars.DOCKERHUB_USERNAME }} # required by the reusable workflow
+      tag: ubi9
+      digest: ${{ needs.build.outputs.digest }}
+    secrets: inherit # inherits DOCKERHUB_TOKEN from repository secrets
+
+  # 6) Promotion with approvals (GitHub Environments - set reviewers/wait timers in repository Settings)
+  promote:
+    name: Promote to release (manual gate)
+    needs:
+      - replicate_dockerhub
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # <-- aggiornato: serve write per upload artifact SBOM
-      packages: write # push to GHCR
-      id-token: write # required for Cosign keyless OIDC
-    env:
-      REGISTRY: ghcr.io
-      IMAGE_NAME: ghcr.io/lorenzobiosa/toolchain-builder
-      IMAGE_TITLE: UBI Container Toolchain Builder
-      IMAGE_DESCRIPTION: Deterministic builder (amd64/arm64 toolchains) with parametric sysroots
-      IMAGE_VENDOR: Biosa Labs
-      IMAGE_LICENSES: MIT
-      WORKFLOW_FILE: .github/workflows/build-image.yml # <-- esplicita il file del workflow
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - base: "registry.access.redhat.com/ubi9/ubi:latest"
-            tag: "ubi9"
-          - base: "registry.access.redhat.com/ubi10/ubi:latest"
-            tag: "ubi10"
-
+    environment: "release" # ensure 'production' exists in Settings → Environments
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-
-      - name: Set up Buildx (BuildKit)
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute build metadata
-        id: meta
-        run: |
-          set -euo pipefail
-          echo "revision=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-
-      - name: Validate prompt files present
-        run: |
-          set -euo pipefail
-          test -f configs/prompt/00-welcome.sh || { echo "::error ::Missing configs/prompt/00-welcome.sh"; exit 1; }
-          test -f configs/prompt/10-ps1.sh     || { echo "::error ::Missing configs/prompt/10-ps1.sh"; exit 1; }
-
-      # Build & Push with Buildx (cache GHA, SBOM, provenance)
-      - name: Build & Push (${{ matrix.tag }}) with cache/SBOM/provenance
-        id: build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/builder/Dockerfile
-          push: true
-          tags: ${{ env.IMAGE_NAME }}:${{ matrix.tag }}
-          build-args: |
-            BASE_IMAGE=${{ matrix.base }}
-            IMAGE_TITLE=${{ env.IMAGE_TITLE }}
-            IMAGE_DESCRIPTION=${{ env.IMAGE_DESCRIPTION }}
-            IMAGE_VENDOR=${{ env.IMAGE_VENDOR }}
-            IMAGE_LICENSES=${{ env.IMAGE_LICENSES }}
-            VCS_REF=${{ steps.meta.outputs.revision }}
-            BUILD_DATE=${{ steps.meta.outputs.created }}
-            IMAGE_VERSION=${{ steps.meta.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: mode=max # in-toto provenance attestation
-          sbom: true # SBOM attestation (SPDX) pushed to registry
-
-      - name: Install Cosign
-        if: ${{ success() }}
-        uses: sigstore/cosign-installer@v3.6.0
-
-      - name: Cosign sign (keyless by default) ${{ matrix.tag }}
-        if: ${{ success() }}
-        env:
-          COSIGN_YES: "true"
-        run: |
-          set -euo pipefail
-          IMAGE="${{ env.IMAGE_NAME }}:${{ matrix.tag }}"
-          DIGEST="${{ steps.build.outputs.digest }}"
-          # Sign by digest (immutable); keyless is default with id-token: write
-          cosign sign "${IMAGE}@${DIGEST}"
-
-      - name: Cosign verify (keyless, strict identity) ${{ matrix.tag }}
-        if: ${{ success() }}
-        run: |
-          set -euo pipefail
-          IMAGE="${{ env.IMAGE_NAME }}:${{ matrix.tag }}"
-          DIGEST="${{ steps.build.outputs.digest }}"
-          # Costruisci l'identità esatta: <repo>/.github/workflows/<file>@<ref>
-          IDENTITY="${{ github.server_url }}/${{ github.repository }}/${{ env.WORKFLOW_FILE }}@${{ github.ref }}"
-          cosign verify \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-identity "${IDENTITY}" \
-            "${IMAGE}@${DIGEST}"
-
-      # Export SBOM file (oltre all'attestazione OCI)
-      - name: Generate SBOM (SPDX JSON) with Syft
-        if: ${{ success() }}
-        uses: anchore/sbom-action@v0
-        with:
-          image: ${{ env.IMAGE_NAME }}:${{ matrix.tag }}
-          format: spdx-json
-          output-file: sbom-${{ matrix.tag }}.spdx.json # <-- corretto
-          artifact-name: sbom-${{ matrix.tag }}.spdx.json # unico per ogni tag
-          upload-artifact: true
+      - run: |
+          echo "Promoting image:"
+          echo "  GHCR       -> ghcr.io/lorenzobiosa/toolchain-builder:ubi9"
+          echo "  Docker Hub -> docker.io/${{ vars.DOCKERHUB_USERNAME }}/toolchain-builder:ubi9"
+          echo "Approved deployment to 'production' environment."

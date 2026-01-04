@@ -1,0 +1,23 @@
+name: Generate SBOM file
+
+on:
+  workflow_call:
+    inputs:
+      image_ref: { required: true, type: string }
+      artifact_name: { required: true, type: string }
+      output_file: { required: true, type: string }
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Generate SBOM via Anchore/Syft
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ inputs.image_ref }}
+          format: spdx-json
+          output-file: ${{ inputs.output_file }}
+          artifact-name: ${{ inputs.artifact_name }}
+          upload-artifact: true

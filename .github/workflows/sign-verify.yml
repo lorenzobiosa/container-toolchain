@@ -1,0 +1,34 @@
+name: Cosign Sign & Verify
+
+on:
+  workflow_call:
+    inputs:
+      image_ref: { required: true, type: string } # es. ghcr.io/<owner>/<image>:tag
+      digest: { required: true, type: string } # contenuto immutabile
+      workflow_file: { required: true, type: string } # es. .github/workflows/sign-verify.yml
+
+jobs:
+  cosign:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC per keyless
+      contents: read
+      packages: read
+    steps:
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.0.0
+        # with: { cosign-release: 'v3.0.3' }  # opzionale pin reale
+
+      - name: Sign (keyless) by digest
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign "${{ inputs.image_ref }}@${{ inputs.digest }}"
+
+      - name: Verify (strict identity)
+        run: |
+          IDENTITY="${{ github.server_url }}/${{ github.repository }}/${{ inputs.workflow_file }}@${{ github.ref }}"
+          cosign verify \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity "${IDENTITY}" \
+            "${{ inputs.image_ref }}@${{ inputs.digest }}"

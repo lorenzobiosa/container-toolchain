@@ -1,0 +1,33 @@
+name: Scan (Trivy)
+
+on:
+  workflow_call:
+    inputs:
+      image_ref: { required: true, type: string }
+      fail_on: { required: true, type: string } # es. "HIGH,CRITICAL"
+      output_sarif: { required: false, type: boolean, default: true }
+
+jobs:
+  trivy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      security-events: write # upload SARIF a Code Scanning
+    steps:
+      - name: Run Trivy vulnerability scanner (SARIF)
+        id: trivy
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ inputs.image_ref }}
+          format: "sarif"
+          output: "trivy.sarif"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          severity: ${{ inputs.fail_on }}
+          exit-code: "1" # fallisce se trova vulnerabilità nella soglia
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always() # carica comunque per avere reporting
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
