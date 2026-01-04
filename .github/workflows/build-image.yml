@@ -48,8 +48,8 @@ jobs:
     name: Build & Push (GHCR) + provenance/SBOM attestation
     uses: ./.github/workflows/build-container.yml
     with:
-      base: registry.access.redhat.com/ubi9/ubi:latest
-      tag: ubi9
+      base: registry.access.redhat.com/ubi10/ubi:latest
+      tag: ubi10
       image_name: ghcr.io/lorenzobiosa/toolchain-builder
       title: UBI Container Toolchain Builder
       description: Deterministic builder (amd64/arm64 toolchains) with parametric sysroots
@@ -63,7 +63,7 @@ jobs:
       - build
     uses: ./.github/workflows/scan-trivy.yml
     with:
-      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi9
+      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi10
       fail_on: HIGH,CRITICAL
       output_sarif: true
 
@@ -73,7 +73,7 @@ jobs:
       - build
     uses: ./.github/workflows/scan-grype.yml
     with:
-      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi9
+      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi10
       fail_on: high
 
   # 3) Cosign: sign & verify (keyless OIDC) strictly bound to the signing workflow path
@@ -84,7 +84,7 @@ jobs:
       - scan_grype
     uses: ./.github/workflows/sign-verify.yml
     with:
-      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi9
+      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi10
       digest: ${{ needs.build.outputs.digest }}
       workflow_file: .github/workflows/sign-verify.yml
 
@@ -95,9 +95,9 @@ jobs:
       - sign
     uses: ./.github/workflows/sbom-export.yml
     with:
-      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi9
-      artifact_name: sbom-ubi9.spdx.json
-      output_file: sbom-ubi9.spdx.json
+      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi10
+      artifact_name: sbom-ubi10.spdx.json
+      output_file: sbom-ubi10.spdx.json
 
   # 5) Replicate the verified image to Docker Hub (post-scan gate) via Buildx imagetools
   replicate_dockerhub:
@@ -109,7 +109,7 @@ jobs:
       ghcr_image: ghcr.io/lorenzobiosa/toolchain-builder
       dockerhub_image: docker.io/${{ vars.DOCKERHUB_USERNAME }}/toolchain-builder
       dockerhub_username: ${{ vars.DOCKERHUB_USERNAME }} # required by the reusable workflow
-      tag: ubi9
+      tag: ubi10
       digest: ${{ needs.build.outputs.digest }}
     secrets: inherit # inherits DOCKERHUB_TOKEN from repository secrets
 
@@ -123,6 +123,6 @@ jobs:
     steps:
       - run: |
           echo "Promoting image:"
-          echo "  GHCR       -> ghcr.io/lorenzobiosa/toolchain-builder:ubi9"
-          echo "  Docker Hub -> docker.io/${{ vars.DOCKERHUB_USERNAME }}/toolchain-builder:ubi9"
+          echo "  GHCR       -> ghcr.io/lorenzobiosa/toolchain-builder:ubi10"
+          echo "  Docker Hub -> docker.io/${{ vars.DOCKERHUB_USERNAME }}/toolchain-builder:ubi10"
           echo "Approved deployment to 'production' environment."
