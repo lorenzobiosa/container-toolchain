@@ -15,6 +15,15 @@
 ARG BASE_IMAGE=""
 FROM --platform=$BUILDPLATFORM ${BASE_IMAGE}
 
+# subito dopo il FROM
+RUN set -Eeuo pipefail; \
+    if command -v microdnf >/dev/null 2>&1; then \
+    microdnf -y update && microdnf -y upgrade; \
+    else \
+    dnf -y update && dnf -y upgrade; \
+    fi && \
+    (command -v microdnf >/dev/null 2>&1 && microdnf clean all || dnf clean all)
+
 # --- Metadata and builder configuration
 ARG IMAGE_TITLE="UBI Container Toolchain Builder"
 ARG IMAGE_DESCRIPTION="Multi-arch builder (amd64/arm64) for CLI tools"
@@ -143,17 +152,33 @@ RUN set -Eeuo pipefail; \
     log "Refreshing repository metadata and applying base upgrades..."; \
     "${PKG_MGR}" -y update >/dev/null && "${PKG_MGR}" upgrade -y --refresh >/dev/null; \
     \
-    # --- Toolchain Installation
-    log "Installing core toolchain and runtime packages..."; \
-    "${PKG_MGR}" install -y --setopt=tsflags=nodocs \
-    findutils which tar gzip xz unzip git sudo "${PY_PKG}" \
+    # --- Toolchain Installation (lean)
+    RUN set -Eeuo pipefail; \
+    . /usr/local/bin/log.sh; \
+    PKG_MGR="$(command -v microdnf >/dev/null 2>&1 && echo microdnf || echo dnf)"; \
+    log "Installing core toolchain and runtime packages (lean)..."; \
+    if [ "$PKG_MGR" = "microdnf" ]; then \
+    microdnf install -y \
+    findutils which tar gzip xz unzip sudo ${PY_PKG} \
     jq ccache clang lld llvm glibc-static \
     gcc gcc-c++ \
     krb5-libs krb5-devel \
     dnf-plugins-core rpm-build rpmdevtools cpio pkgconf \
-    pkgconf-pkg-config ca-certificates>/dev/null; \
-    log "Core toolchain and Python runtime installed successfully."; \
-    \
+    pkgconf-pkg-config ca-certificates \
+    && microdnf clean all; \
+    else \
+    dnf install -y \
+    --setopt=tsflags=nodocs \
+    --setopt=install_weak_deps=False \
+    --exclude=perl-Git \
+    findutils which tar gzip xz unzip sudo ${PY_PKG} \
+    jq ccache clang lld llvm glibc-static \
+    gcc gcc-c++ \
+    krb5-libs krb5-devel \
+    dnf-plugins-core rpm-build rpmdevtools cpio pkgconf \
+    pkgconf-pkg-config ca-certificates \
+    && dnf clean all; \
+    fi; \
     # --- Python Pip Bootstrapping (from PyPA)
     log "Bootstrapping pip from PyPA..."; \
     curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py; \
