@@ -1,82 +1,68 @@
-name: Build & Push
+name: Replicate image to Docker Hub
 
 on:
   workflow_call:
     inputs:
-      base: { required: true, type: string }
-      tag: { required: true, type: string }
-      image_name: { required: true, type: string } # ghcr.io/<owner>/<image>
-      title: { required: true, type: string }
-      description: { required: true, type: string }
-      vendor: { required: true, type: string }
-      licenses: { required: true, type: string }
-    outputs:
-      digest:
-        description: "Image content digest"
-        value: ${{ jobs.build.outputs.digest }}
+      ghcr_image:
+        description: "GHCR image (e.g., ghcr.io/<owner>/<image>)"
+        required: true
+        type: string
+      dockerhub_image:
+        description: "Docker Hub image (e.g., docker.io/<user>/<image>)"
+        required: true
+        type: string
+      dockerhub_username:
+        description: "Docker Hub username to authenticate (not inherited from vars; pass explicitly)"
+        required: true
+        type: string
       tag:
-        description: "Tag propagated"
-        value: ${{ inputs.tag }}
+        description: "Tag to replicate (e.g., ubi9)"
+        required: true
+        type: string
+      digest:
+        description: "Content digest from the GHCR build (immutable reference)"
+        required: true
+        type: string
+
+permissions:
+  contents: read # Leggere metadati del repo se necessario
+  packages: read # Necessario per login e pull da GHCR
 
 jobs:
-  build:
+  replicate:
+    name: Replicate GHCR image to Docker Hub
     runs-on: ubuntu-latest
-    permissions:
-      packages: write
-      contents: read
-    outputs:
-      digest: ${{ steps.out.outputs.digest }}
     steps:
-      - uses: actions/checkout@v4
+      # --- Login to Docker Hub using explicit username input and repository secret
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ inputs.dockerhub_username }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # QEMU NON NECESSARIO per single-arch amd64 → RIMOSSO
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
-        # facoltativo: install: true se vuoi che `docker buildx` sia il default
-        # with:
-        #   install: true
-
-      - name: Login to GHCR
+      # --- Login to GHCR for read access
+      - name: Login to GHCR (read)
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute build metadata
-        id: meta
-        run: |
-          echo "revision=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      # --- Setup Buildx (needed for imagetools/manifest operations)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build & Push (GHCR) — provenance+SBOM
-        id: buildpush
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/builder/Dockerfile
-          # Single arch ONLY
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ inputs.image_name }}:${{ inputs.tag }}
-            ${{ inputs.image_name }}:latest
-          build-args: |
-            BASE_IMAGE=${{ inputs.base }}
-            IMAGE_TITLE=${{ inputs.title }}
-            IMAGE_DESCRIPTION=${{ inputs.description }}
-            IMAGE_VENDOR=${{ inputs.vendor }}
-            IMAGE_LICENSES=${{ inputs.licenses }}
-            VCS_REF=${{ steps.meta.outputs.revision }}
-            BUILD_DATE=${{ steps.meta.outputs.created }}
-            IMAGE_VERSION=${{ steps.meta.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: mode=max
-          sbom: true
-
-      - name: Export digest
-        id: out
+      # --- Replicate manifest by digest from GHCR to Docker Hub
+      - name: Replicate tag to Docker Hub via imagetools (by digest)
+        shell: bash
         run: |
-          echo "digest=${{ steps.buildpush.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          # Create a manifest on Docker Hub pointing to the GHCR digest
+          docker buildx imagetools create \
+            --tag "${{ inputs.dockerhub_image }}:${{ inputs.tag }}" \
+            "${{ inputs.ghcr_image }}@${{ inputs.digest }}"
+
+          # Ensure 'latest' points to the same digest
+          docker buildx imagetools create \
+            --tag "${{ inputs.dockerhub_image }}:latest" \
+            "${{ inputs.ghcr_image }}@${{ inputs.digest }}"
