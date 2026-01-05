@@ -1,3 +1,10 @@
+# ------------------------------------------------------------------------------------
+# SBOM Export (Syft/Anchore)
+# ------------------------------------------------------------------------------------
+# Author: Lorenzo Biosa <lorenzo@biosa-labs.com> © Biosa Labs
+# Generates an SPDX JSON SBOM and uploads it as a workflow artifact.
+# ------------------------------------------------------------------------------------
+
 name: Generate SBOM file
 
 on:

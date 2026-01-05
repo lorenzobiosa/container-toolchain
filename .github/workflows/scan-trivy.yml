@@ -1,20 +1,27 @@
+# ------------------------------------------------------------------------------------
+# Trivy Vulnerability Scan
+# ------------------------------------------------------------------------------------
+# Author: Lorenzo Biosa <lorenzo@biosa-labs.com> © Biosa Labs
+# Scans a container image and uploads SARIF to GitHub Code Scanning.
+# ------------------------------------------------------------------------------------
+
 name: Scan (Trivy)
 
 on:
   workflow_call:
     inputs:
       image_ref: { required: true, type: string }
-      fail_on: { required: true, type: string } # es. "HIGH,CRITICAL"
+      fail_on: { required: true, type: string }
       output_sarif: { required: false, type: boolean, default: true }
 
 jobs:
   trivy:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      security-events: write # upload SARIF a Code Scanning
+      contents: read
+      security-events: write # SARIF upload
     steps:
-      - name: Run Trivy vulnerability scanner (SARIF)
+      - name: Run Trivy vulnerability scanner
         id: trivy
         uses: aquasecurity/trivy-action@0.33.1
         with:
@@ -24,10 +31,10 @@ jobs:
           ignore-unfixed: true
           vuln-type: "os,library"
           severity: ${{ inputs.fail_on }}
-          exit-code: "1" # fallisce se trova vulnerabilità nella soglia
+          exit-code: "1"
 
       - name: Upload SARIF to GitHub Code Scanning
-        if: always() # carica comunque per avere reporting
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy.sarif

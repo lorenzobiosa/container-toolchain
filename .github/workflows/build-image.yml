@@ -1,21 +1,23 @@
 # ------------------------------------------------------------------------------------
 # Build & Release Toolchain Builder
 # ------------------------------------------------------------------------------------
+# Author: Lorenzo Biosa <lorenzo@biosa-labs.com> © Biosa Labs
 # Description:
-# End-to-end, production-grade CI workflow that:
-#  - Builds and pushes a multi-arch image to GHCR with SLSA provenance and SBOM attestation
+# End-to-end CI/CD workflow that:
+#  - Builds and pushes an AMD64 image to GHCR for EL9 and EL10
 #  - Runs vulnerability scans (Trivy + Grype) and uploads SARIF reports to Code Scanning
-#  - Signs and verifies the image using Cosign (keyless via GitHub OIDC)
-#  - Exports a standalone SBOM (SPDX JSON) as a workflow artifact
-#  - Replicates the verified image to Docker Hub (post-scan gate) via Buildx imagetools
-#  - Supports environment-based promotion with manual approvals (GitHub Environments)
+#  - Signs and verifies images using Cosign (keyless via GitHub OIDC)
+#  - Exports SBOMs (SPDX JSON) as workflow artifacts
+#  - Replicates verified images to Docker Hub via Buildx imagetools (by digest)
 #
 # Requirements:
-#  - Repository VAR:    DOCKERHUB_USERNAME   (non-sensitive)
-#  - Repository SECRET: DOCKERHUB_TOKEN     (Docker Hub access token)
-#  - Reusable workflows present under .github/workflows/:
-#      build-container.yml, scan-trivy.yml, scan-grype.yml,
-#      sign-verify.yml, sbom-export.yml, replicate-to-dockerhub.yml
+#  - Repository Secret: DOCKERHUB_TOKEN       (Docker Hub access token)
+#  - Repository Variable: DOCKERHUB_USERNAME  (non-sensitive)
+#
+# Notes:
+#  - Least-privilege permissions at workflow level.
+#  - Concurrency prevents overlapping runs for the same ref.
+#  - All stages after build call reusable workflows; no duplication here.
 # ------------------------------------------------------------------------------------
 
 name: Build & Release Toolchain Builder
@@ -30,99 +32,166 @@ on:
       - configs/prompt/**
       - .github/workflows/build-image.yml
 
-# Least-privilege permissions needed for this workflow
 permissions:
-  contents: write # artifacts, SBOM uploads
-  packages: write # push to GHCR
-  id-token: write # Cosign keyless (OIDC)
-  security-events: write # SARIF uploads to Code Scanning
+  contents: write
+  packages: write
+  id-token: write
+  security-events: write
 
-# Prevent overlapping runs for the same ref (best practice)
 concurrency:
   group: build-release-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
-  # 1) Build & push to GHCR (SLSA provenance + SBOM attestation)
-  build:
-    name: Build & Push (GHCR) + provenance/SBOM attestation
-    uses: ./.github/workflows/build-container.yml
-    with:
-      base: registry.access.redhat.com/ubi10/ubi:latest
-      tag: ubi10
-      image_name: ghcr.io/lorenzobiosa/toolchain-builder
-      title: UBI Container Toolchain Builder
-      description: Deterministic builder (amd64/arm64 toolchains) with parametric sysroots
-      vendor: Biosa Labs
-      licenses: MIT
+env:
+  DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }} # non-sensitive
+  IMAGE_NAME: ghcr.io/lorenzobiosa/toolchain-builder
+  DOCKERFILE: docker/builder/Dockerfile
+  CONTEXT: .
+  PLATFORMS: linux/amd64
+  TITLE: UBI Container Toolchain Builder
+  DESCRIPTION: Deterministic builder (amd64 toolchains) with parametric sysroots
+  VENDOR: Biosa Labs
+  LICENSES: MIT
 
-  # 2) Vulnerability scans (Trivy + Grype) with SARIF uploads (gating)
+jobs:
+  # 0) Prepare matrix once and reuse in all subsequent jobs
+  variants:
+    name: Prepare build variants matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        run: |
+          cat > /tmp/matrix.json <<'JSON'
+          {"variant":[
+            {"tag":"el9",  "base_image":"registry.access.redhat.com/ubi9/ubi:latest"},
+            {"tag":"el10", "base_image":"registry.access.redhat.com/ubi10/ubi:latest"}
+          ]}
+          JSON
+          echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"
+
+  # 1) Build & push to GHCR (amd64) per variant
+  build:
+    name: Build & Push (GHCR) - ${{ matrix.variant.tag }}
+    runs-on: ubuntu-latest
+    needs: [variants]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix).variant }}
+    outputs:
+      digest: ${{ steps.build.outputs.digest }} # docker/build-push-action@v6 provides 'digest'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR (write)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & Push image (amd64) to GHCR
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
+          platforms: ${{ env.PLATFORMS }} # linux/amd64
+          push: true
+          tags: ghcr.io/lorenzobiosa/toolchain-builder:${{ matrix.variant.tag }}
+          labels: |
+            org.opencontainers.image.title=${{ env.TITLE }}
+            org.opencontainers.image.description=${{ env.DESCRIPTION }}
+            org.opencontainers.image.vendor=${{ env.VENDOR }}
+            org.opencontainers.image.licenses=${{ env.LICENSES }}
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            BASE_IMAGE=${{ matrix.variant.base_image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # 2) Vulnerability scan with Trivy (gating + SARIF) per variant
   scan_trivy:
-    name: Scan (Trivy) - gate HIGH/CRITICAL + SARIF
-    needs:
-      - build
+    name: Scan (Trivy) - ${{ matrix.variant.tag }} (HIGH/CRITICAL + SARIF)
+    needs: [variants, build]
+    strategy:
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix).variant }}
     uses: ./.github/workflows/scan-trivy.yml
     with:
-      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi10
+      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:${{ matrix.variant.tag }}
       fail_on: HIGH,CRITICAL
       output_sarif: true
+    secrets: inherit
 
+  # 3) Vulnerability scan with Grype (gating + SARIF) per variant
   scan_grype:
-    name: Scan (Grype) - gate HIGH + SARIF
-    needs:
-      - build
+    name: Scan (Grype) - ${{ matrix.variant.tag }} (HIGH + SARIF)
+    needs: [variants, build]
+    strategy:
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix).variant }}
     uses: ./.github/workflows/scan-grype.yml
     with:
-      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi10
+      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:${{ matrix.variant.tag }}
       fail_on: high
+    secrets: inherit
 
-  # 3) Cosign: sign & verify (keyless OIDC) strictly bound to the signing workflow path
+  # 4) Sign & verify with Cosign (keyless OIDC) per variant
   sign:
-    name: Cosign sign & verify (keyless)
-    needs:
-      - scan_trivy
-      - scan_grype
+    name: Cosign sign & verify (keyless) - ${{ matrix.variant.tag }}
+    needs: [variants, scan_trivy, scan_grype]
+    strategy:
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix).variant }}
     uses: ./.github/workflows/sign-verify.yml
     with:
-      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi10
+      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:${{ matrix.variant.tag }}
       digest: ${{ needs.build.outputs.digest }}
       workflow_file: .github/workflows/sign-verify.yml
+    secrets: inherit
 
-  # 4) SBOM file (SPDX JSON) in addition to registry attestation
-  sbom_file:
-    name: SBOM (SPDX JSON) artifact
-    needs:
-      - sign
+  # 5) SBOM (SPDX JSON) artifact per variant
+  sbom:
+    name: SBOM (SPDX JSON) - ${{ matrix.variant.tag }}
+    needs: [variants, sign]
+    strategy:
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix).variant }}
     uses: ./.github/workflows/sbom-export.yml
     with:
-      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:ubi10
-      artifact_name: sbom-ubi10.spdx.json
-      output_file: sbom-ubi10.spdx.json
+      image_ref: ghcr.io/lorenzobiosa/toolchain-builder:${{ matrix.variant.tag }}
+      artifact_name: sbom-${{ matrix.variant.tag }}.spdx.json
+      output_file: sbom-${{ matrix.variant.tag }}.spdx.json
+    secrets: inherit
 
-  # 5) Replicate the verified image to Docker Hub (post-scan gate) via Buildx imagetools
+  # 6) Replicate the verified image to Docker Hub (by digest) per variant
   replicate_dockerhub:
-    name: Replicate to Docker Hub (post-scan gate)
-    needs:
-      - sbom_file
+    name: Replicate to Docker Hub - ${{ matrix.variant.tag }}
+    needs: [variants, sbom]
+    strategy:
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix).variant }}
     uses: ./.github/workflows/replicate-to-dockerhub.yml
     with:
       ghcr_image: ghcr.io/lorenzobiosa/toolchain-builder
       dockerhub_image: docker.io/${{ vars.DOCKERHUB_USERNAME }}/toolchain-builder
-      dockerhub_username: ${{ vars.DOCKERHUB_USERNAME }} # required by the reusable workflow
-      tag: ubi10
+      dockerhub_username: ${{ vars.DOCKERHUB_USERNAME }}
+      tag: ${{ matrix.variant.tag }}
       digest: ${{ needs.build.outputs.digest }}
-    secrets: inherit # inherits DOCKERHUB_TOKEN from repository secrets
+    secrets: inherit
 
-  # 6) Promotion with approvals (GitHub Environments - set reviewers/wait timers in repository Settings)
+  # 7) Promotion with approvals (single gate after both variants)
   promote:
     name: Promote to release (manual gate)
-    needs:
-      - replicate_dockerhub
     runs-on: ubuntu-latest
-    environment: "release" # ensure 'production' exists in Settings → Environments
+    needs: [replicate_dockerhub]
+    environment: "release"
     steps:
       - run: |
-          echo "Promoting image:"
-          echo "  GHCR       -> ghcr.io/lorenzobiosa/toolchain-builder:ubi10"
-          echo "  Docker Hub -> docker.io/${{ vars.DOCKERHUB_USERNAME }}/toolchain-builder:ubi10"
-          echo "Approved deployment to 'production' environment."
+          echo "Promoting images:"
+          echo "  GHCR:       ghcr.io/lorenzobiosa/toolchain-builder:el9 and :el10"
+          echo "  Docker Hub: docker.io/${{ vars.DOCKERHUB_USERNAME }}/toolchain-builder:el9 and :el10"
+          echo "'latest' points to :el10"
+          echo "Approved deployment to 'release' environment."

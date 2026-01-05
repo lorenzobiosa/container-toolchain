@@ -1,3 +1,10 @@
+# ------------------------------------------------------------------------------------
+# Anchore/Grype Vulnerability Scan
+# ------------------------------------------------------------------------------------
+# Author: Lorenzo Biosa <lorenzo@biosa-labs.com> © Biosa Labs
+# Scans a container image using Grype and uploads SARIF to GitHub Code Scanning.
+# ------------------------------------------------------------------------------------
+
 name: Scan (Grype)
 
 on:
@@ -16,7 +23,7 @@ jobs:
   grype:
     runs-on: ubuntu-latest
     permissions:
-      security-events: write # required for SARIF upload
+      security-events: write # SARIF upload
     steps:
       - name: Scan image with Grype (Anchore)
         id: grype
@@ -24,7 +31,7 @@ jobs:
         with:
           image: ${{ inputs.image_ref }}
           fail-build: true
-          severity-cutoff: ${{ inputs.fail_on }} # valid values: low|medium|high|critical
+          severity-cutoff: ${{ inputs.fail_on }} # values: negligible|low|medium|high|critical
           output-format: sarif
 
       - name: Upload SARIF (Grype) to GitHub Code Scanning

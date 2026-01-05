@@ -1,7 +1,9 @@
-# .github/workflows/codeql.yml
-# ------------------------------------------------------------------------------
-# Biosa Labs — CodeQL Advanced Security Scanning
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------------
+# CodeQL Security Scanning (Actions-focused)
+# ------------------------------------------------------------------------------------
+# Author: Lorenzo Biosa <lorenzo@biosa-labs.com> © Biosa Labs
+# Scans repository for GitHub Actions security issues and uploads SARIF.
+# ------------------------------------------------------------------------------------
 
 name: CodeQL Security Scanning
 
@@ -21,7 +23,7 @@ permissions:
   contents: read
   actions: read
   packages: read
-  security-events: write # required to upload SARIF
+  security-events: write # SARIF upload
 
 jobs:
   create-matrix:
@@ -33,7 +35,6 @@ jobs:
       - name: Build language matrix (Actions only)
         id: set-matrix
         run: |
-          # Analyze only GitHub Actions workflows (no Go/JS/Python in repo)
           echo '["actions"]' > /tmp/lang.json
           echo "languages=$(cat /tmp/lang.json)" >> "$GITHUB_OUTPUT"
 
@@ -45,22 +46,17 @@ jobs:
       fail-fast: false
       matrix:
         language: ${{ fromJSON(needs.create-matrix.outputs.matrix) }}
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        uses: actions/checkout@v4
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@5ab5aef07979436fcc7f5da1f799a5224047d84a
+        uses: github/codeql-action/init@v3
         with:
-          languages: ${{ matrix.language }} # -> "actions"
-          build-mode: none # Explicit for Actions (interpreted)
-          # Optional: usa una query suite più estesa per Actions
-          # queries: security-extended
-
-      # Nessun autobuild: non serve per 'actions' (linguaggio non compilato)
+          languages: ${{ matrix.language }}
+          build-mode: none
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@5ab5aef07979436fcc7f5da1f799a5224047d84a
+        uses: github/codeql-action/analyze@v3
         with:
           category: "/language:${{ matrix.language }}"
