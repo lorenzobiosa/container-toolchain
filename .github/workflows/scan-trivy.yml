@@ -1,8 +1,9 @@
 # ------------------------------------------------------------------------------------
-# Trivy Vulnerability Scan
+# Trivy Vulnerability Scan (Reusable Workflow)
 # ------------------------------------------------------------------------------------
-# Author: Lorenzo Biosa <lorenzo@biosa-labs.com> © Biosa Labs
-# Scans a container image and uploads SARIF to GitHub Code Scanning.
+# Author: Lorenzo Biosa <lorenzobiosa@biosa-labs.com> © Biosa Labs
+# Scans a container image and (optionally) uploads SARIF to GitHub Code Scanning.
+# Also persists the SARIF as a downloadable artifact with a sanitized name.
 # ------------------------------------------------------------------------------------
 
 name: Scan (Trivy)
@@ -10,17 +11,28 @@ name: Scan (Trivy)
 on:
   workflow_call:
     inputs:
-      image_ref: { required: true, type: string }
-      fail_on: { required: true, type: string }
-      output_sarif: { required: false, type: boolean, default: true }
+      image_ref:
+        description: "Container image reference (e.g. ghcr.io/<owner>/<image>:tag)"
+        required: true
+        type: string
+      fail_on:
+        description: "Severity threshold that fails the job (e.g. HIGH,CRITICAL)"
+        required: true
+        type: string
+      output_sarif:
+        description: "Upload SARIF to GitHub Code Scanning (true/false)"
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   trivy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write # SARIF upload
+      security-events: write # required when uploading SARIF to Code Scanning
     steps:
+      # --- Run Trivy scan and emit SARIF to a file
       - name: Run Trivy vulnerability scanner
         id: trivy
         uses: aquasecurity/trivy-action@0.33.1
@@ -31,16 +43,41 @@ jobs:
           ignore-unfixed: true
           vuln-type: "os,library"
           severity: ${{ inputs.fail_on }}
-          exit-code: "1"
+          exit-code: "1" # fail when >= fail_on vulnerabilities are found
 
+      # --- Upload SARIF to Code Scanning (optional, controlled by 'output_sarif')
       - name: Upload SARIF to GitHub Code Scanning
-        if: always()
+        if: always() && inputs.output_sarif == true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy.sarif
 
+      # --- Sanitize artifact name to avoid invalid characters (: / \ " < > | * ? CR LF)
+      - name: Sanitize image_ref for artifact name
+        id: sanitize
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          SAFE_NAME="${{ inputs.image_ref }}"
+          # Replace disallowed characters with '-'
+          SAFE_NAME="${SAFE_NAME//\//-}"
+          SAFE_NAME="${SAFE_NAME//:/-}"
+          SAFE_NAME="${SAFE_NAME//\\/ -}"
+          SAFE_NAME="${SAFE_NAME//\"/-}"
+          SAFE_NAME="${SAFE_NAME//</-}"
+          SAFE_NAME="${SAFE_NAME//>/-}"
+          SAFE_NAME="${SAFE_NAME//|/-}"
+          SAFE_NAME="${SAFE_NAME//\*/-}"
+          SAFE_NAME="${SAFE_NAME//\?/-}"
+          SAFE_NAME="${SAFE_NAME//$'\r'/-}"
+          SAFE_NAME="${SAFE_NAME//$'\n'/-}"
+          echo "safe_name=${SAFE_NAME}" >> "$GITHUB_OUTPUT"
+
+      # --- Persist SARIF as a downloadable artifact (always)
       - name: Upload SARIF as artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-${{ inputs.image_ref }}
+          name: trivy-${{ steps.sanitize.outputs.safe_name }}.sarif
           path: trivy.sarif
