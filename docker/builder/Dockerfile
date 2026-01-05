@@ -144,7 +144,6 @@ RUN set -Eeuo pipefail; \
     "${PKG_MGR}" -y update >/dev/null && "${PKG_MGR}" upgrade -y --refresh >/dev/null; \
     \
     # --- Toolchain Installation (lean)
-    RUN set -Eeuo pipefail; \
     . /usr/local/bin/log.sh; \
     PKG_MGR="$(command -v microdnf >/dev/null 2>&1 && echo microdnf || echo dnf)"; \
     log "Installing core toolchain and runtime packages (lean)..."; \
