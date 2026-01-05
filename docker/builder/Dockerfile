@@ -148,28 +148,13 @@ RUN set -Eeuo pipefail; \
     . /usr/local/bin/log.sh; \
     PKG_MGR="$(command -v microdnf >/dev/null 2>&1 && echo microdnf || echo dnf)"; \
     log "Installing core toolchain and runtime packages (lean)..."; \
-    if [ "$PKG_MGR" = "microdnf" ]; then \
-    microdnf install -y \
+    ${PKG_MGR} install -y \
     findutils which tar gzip xz unzip sudo ${PY_PKG} \
     jq ccache clang lld llvm glibc-static \
     gcc gcc-c++ \
     krb5-libs krb5-devel \
     dnf-plugins-core rpm-build rpmdevtools cpio pkgconf \
-    pkgconf-pkg-config ca-certificates \
-    && microdnf clean all; \
-    else \
-    dnf install -y \
-    --setopt=tsflags=nodocs \
-    --setopt=install_weak_deps=False \
-    --exclude=perl-Git \
-    findutils which tar gzip xz unzip sudo ${PY_PKG} \
-    jq ccache clang lld llvm glibc-static \
-    gcc gcc-c++ \
-    krb5-libs krb5-devel \
-    dnf-plugins-core rpm-build rpmdevtools cpio pkgconf \
-    pkgconf-pkg-config ca-certificates \
-    && dnf clean all; \
-    fi; \
+    pkgconf-pkg-config ca-certificates; \
     # --- Python Pip Bootstrapping (from PyPA)
     log "Bootstrapping pip from PyPA..."; \
     curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py; \
