@@ -29,11 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU (multi-arch)
-        uses: docker/setup-qemu-action@v3
-
+      # QEMU NON NECESSARIO per single-arch amd64 → RIMOSSO
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
+        # facoltativo: install: true se vuoi che `docker buildx` sia il default
+        # with:
+        #   install: true
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -55,7 +56,8 @@ jobs:
         with:
           context: .
           file: docker/builder/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          # Single arch ONLY
+          platforms: linux/amd64
           push: true
           tags: |
             ${{ inputs.image_name }}:${{ inputs.tag }}
@@ -71,8 +73,8 @@ jobs:
             IMAGE_VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: mode=max # SLSA provenance (attenzione ai build-args)  # [11](https://linuxconfig.org/install-development-tools-on-redhat-8)
-          sbom: true # SBOM attestation (SPDX)                     # [11](https://linuxconfig.org/install-development-tools-on-redhat-8)
+          provenance: mode=max
+          sbom: true
 
       - name: Export digest
         id: out
