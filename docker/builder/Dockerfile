@@ -15,15 +15,6 @@
 ARG BASE_IMAGE=""
 FROM --platform=$BUILDPLATFORM ${BASE_IMAGE}
 
-# subito dopo il FROM
-RUN set -Eeuo pipefail; \
-    if command -v microdnf >/dev/null 2>&1; then \
-    microdnf -y update && microdnf -y upgrade; \
-    else \
-    dnf -y update && dnf -y upgrade; \
-    fi && \
-    (command -v microdnf >/dev/null 2>&1 && microdnf clean all || dnf clean all)
-
 # --- Metadata and builder configuration
 ARG IMAGE_TITLE="UBI Container Toolchain Builder"
 ARG IMAGE_DESCRIPTION="Multi-arch builder (amd64/arm64) for CLI tools"
