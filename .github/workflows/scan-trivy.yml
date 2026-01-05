@@ -42,5 +42,5 @@ jobs:
       - name: Upload SARIF as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-${{ inputs.image_ref }}.sarif
+          name: trivy-${{ inputs.image_ref }}
           path: trivy.sarif
