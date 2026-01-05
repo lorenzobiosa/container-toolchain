@@ -116,7 +116,7 @@ jobs:
     name: Scan (Trivy) - ${{ matrix.variant.tag }} (HIGH/CRITICAL + SARIF)
     needs: [variants, build]
     strategy:
-      matrix: ${{ fromJSON(needs.variants.outputs.matrix).variant }}
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
     uses: ./.github/workflows/scan-trivy.yml
     with:
       image_ref: ghcr.io/lorenzobiosa/toolchain-builder:${{ matrix.variant.tag }}
@@ -129,7 +129,7 @@ jobs:
     name: Scan (Grype) - ${{ matrix.variant.tag }} (HIGH + SARIF)
     needs: [variants, build]
     strategy:
-      matrix: ${{ fromJSON(needs.variants.outputs.matrix).variant }}
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
     uses: ./.github/workflows/scan-grype.yml
     with:
       image_ref: ghcr.io/lorenzobiosa/toolchain-builder:${{ matrix.variant.tag }}
@@ -141,7 +141,7 @@ jobs:
     name: Cosign sign & verify (keyless) - ${{ matrix.variant.tag }}
     needs: [variants, scan_trivy, scan_grype]
     strategy:
-      matrix: ${{ fromJSON(needs.variants.outputs.matrix).variant }}
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
     uses: ./.github/workflows/sign-verify.yml
     with:
       image_ref: ghcr.io/lorenzobiosa/toolchain-builder:${{ matrix.variant.tag }}
@@ -154,7 +154,7 @@ jobs:
     name: SBOM (SPDX JSON) - ${{ matrix.variant.tag }}
     needs: [variants, sign]
     strategy:
-      matrix: ${{ fromJSON(needs.variants.outputs.matrix).variant }}
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
     uses: ./.github/workflows/sbom-export.yml
     with:
       image_ref: ghcr.io/lorenzobiosa/toolchain-builder:${{ matrix.variant.tag }}
@@ -167,7 +167,7 @@ jobs:
     name: Replicate to Docker Hub - ${{ matrix.variant.tag }}
     needs: [variants, sbom]
     strategy:
-      matrix: ${{ fromJSON(needs.variants.outputs.matrix).variant }}
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
     uses: ./.github/workflows/replicate-to-dockerhub.yml
     with:
       ghcr_image: ghcr.io/lorenzobiosa/toolchain-builder
