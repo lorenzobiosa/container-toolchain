@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------------------------
-# Build & Release Toolchain Builder (Enterprise)
+# Build & Release Toolchain Builder
 # ------------------------------------------------------------------------------------
 # Description:
 # End-to-end, production-grade CI workflow that:
@@ -18,7 +18,7 @@
 #      sign-verify.yml, sbom-export.yml, replicate-to-dockerhub.yml
 # ------------------------------------------------------------------------------------
 
-name: Build & Release Toolchain Builder (Enterprise)
+name: Build & Release Toolchain Builder
 
 on:
   workflow_dispatch:
