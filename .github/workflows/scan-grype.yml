@@ -1,8 +1,10 @@
 # ------------------------------------------------------------------------------------
-# Anchore/Grype Vulnerability Scan
+# Anchore/Grype Vulnerability Scan (Reusable Workflow)
 # ------------------------------------------------------------------------------------
-# Author: Lorenzo Biosa <lorenzo@biosa-labs.com> © Biosa Labs
+# Author: Lorenzo Biosa <lorenzobiosa@biosa-labs.com> © Biosa Labs
 # Scans a container image using Grype and uploads SARIF to GitHub Code Scanning.
+# Ensures SARIF is always uploaded (both to Code Scanning and as an artifact),
+# while still failing the job when the threshold is met.
 # ------------------------------------------------------------------------------------
 
 name: Scan (Grype)
@@ -23,25 +25,60 @@ jobs:
   grype:
     runs-on: ubuntu-latest
     permissions:
-      security-events: write # SARIF upload
+      security-events: write # required for SARIF upload
+      contents: read
     steps:
+      # --- Run Grype scan (allow subsequent uploads even if threshold is met)
       - name: Scan image with Grype (Anchore)
         id: grype
         uses: anchore/scan-action@v6
+        continue-on-error: true
         with:
           image: ${{ inputs.image_ref }}
           fail-build: true
-          severity-cutoff: ${{ inputs.fail_on }} # values: negligible|low|medium|high|critical
+          severity-cutoff: ${{ inputs.fail_on }} # valid: negligible|low|medium|high|critical
           output-format: sarif
 
+      # --- Upload SARIF to GitHub Code Scanning (always)
       - name: Upload SARIF (Grype) to GitHub Code Scanning
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
 
+      # --- Sanitize image_ref for artifact name (replace disallowed chars)
+      - name: Sanitize image_ref for artifact name
+        id: sanitize
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          SAFE_NAME="${{ inputs.image_ref }}"
+          SAFE_NAME="${SAFE_NAME//\//-}"
+          SAFE_NAME="${SAFE_NAME//:/-}"
+          SAFE_NAME="${SAFE_NAME//\\/ -}"
+          SAFE_NAME="${SAFE_NAME//\"/-}"
+          SAFE_NAME="${SAFE_NAME//</-}"
+          SAFE_NAME="${SAFE_NAME//>/-}"
+          SAFE_NAME="${SAFE_NAME//|/-}"
+          SAFE_NAME="${SAFE_NAME//\*/-}"
+          SAFE_NAME="${SAFE_NAME//\?/-}"
+          SAFE_NAME="${SAFE_NAME//$'\r'/-}"
+          SAFE_NAME="${SAFE_NAME//$'\n'/-}"
+          echo "safe_name=${SAFE_NAME}" >> "$GITHUB_OUTPUT"
+
+      # --- Persist SARIF as a downloadable artifact (always)
       - name: Upload SARIF as artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: grype-${{ inputs.image_ref }}.sarif
+          name: grype-${{ steps.sanitize.outputs.safe_name }}.sarif
           path: ${{ steps.grype.outputs.sarif }}
+
+      # --- Explicit gating: fail the job only AFTER uploads have succeeded
+      - name: Fail job if Grype threshold was met
+        if: ${{ steps.grype.outcome == 'failure' }}
+        shell: bash
+        run: |
+          echo "❌ Vulnerabilities at or above '${{ inputs.fail_on }}' threshold were found."
+          exit 1
