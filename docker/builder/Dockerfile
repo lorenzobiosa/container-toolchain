@@ -275,6 +275,7 @@ RUN set -Eeuo pipefail; \
     done; \
     \
     # --- Cleanup
+    "${PKG_MGR}" -y upgrade; \
     log "System cleanup..."; \
     /usr/local/bin/clean-python-setuptools.sh; \
     "${PKG_MGR}" clean all >/dev/null; \
